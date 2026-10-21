@@ -22,7 +22,11 @@ import {
   CheckCircle2,
   AlertTriangle,
   ShieldAlert,
+  Shield,
+  Webhook,
+  Compass,
 } from "lucide-react";
+import { auth, googleAuthProvider, signInWithPopup } from "./lib/firebase.ts";
 
 const API_BASE = "/api/v1";
 const VIDEO_URL =
@@ -62,10 +66,17 @@ export default function App() {
   const [menuOpen, setMenuOpen] = useState(false);
   const [stageDrawer, setStageDrawer] = useState(null); // null | "about" | "features" | "faq" | "contact"
 
-  // Auth & Console state
-  const [token, setToken] = useState(localStorage.getItem("threatops_token") || "");
-  const [user, setUser] = useState(null);
+  // Auth & Console state (token stored strictly in memory)
+  const [token, setToken] = useState("");
+  const [user, setUser] = useState({
+    uid: "soc-lead-default-uid",
+    email: "lead_analyst@threatops.io",
+    full_name: "Lead SOC Analyst",
+    role: "SOC Lead",
+  });
   const [activeTab, setActiveTab] = useState("pipeline"); // pipeline, ensemble, graph, rules, enrich, siem, impact
+  const [auditLogs, setAuditLogs] = useState([]);
+  const [activeLearningBanner, setActiveLearningBanner] = useState(null);
 
   // Live IOC feed & OSINT sources state
   const [iocs, setIocs] = useState([]);
@@ -119,9 +130,10 @@ export default function App() {
   const [addingDataset, setAddingDataset] = useState(false);
   const [datasetBanner, setDatasetBanner] = useState(null);
 
-  // NLP Report Extractor state
+  // Deep Threat Report & Diamond-Model Attribution state
+  const [reportFormat, setReportFormat] = useState("text_pdf");
   const [reportText, setReportText] = useState(
-    "Adversaries exploited CVE-2024-3400 using a spearphishing lure to deploy a second-stage dropper via powershell. The script executed wget against hxxp://185.220.101[.]45:8080/bin.sh and established a Cobalt Strike C2 beacon to 91.215.85[.]142."
+    "Adversaries exploited CVE-2024-3400 using a spearphishing lure to deploy a second-stage dropper via powershell. The script executed wget against hxxp://185.220.101[.]45:8080/bin.sh and established a Cobalt Strike C2 beacon to 91.215.85[.]142 targeting financial banking infrastructure."
   );
   const [reportResult, setReportResult] = useState(null);
   const [extractingReport, setExtractingReport] = useState(false);
@@ -139,9 +151,16 @@ export default function App() {
   const [enrichment, setEnrichment] = useState(null);
   const [enriching, setEnriching] = useState(false);
 
-  // SIEM/SOAR/EDR Export state
+  // SIEM/SOAR/EDR Export & Automated Outbound Webhook Playbooks state
   const [selectedSiem, setSelectedSiem] = useState("splunk");
   const [exportData, setExportData] = useState(null);
+  const [soarPlaybooks, setSoarPlaybooks] = useState([]);
+  const [soarExecutions, setSoarExecutions] = useState([]);
+  const [newPlaybookName, setNewPlaybookName] = useState("");
+  const [newPlaybookChannel, setNewPlaybookChannel] = useState("slack");
+  const [newPlaybookUrl, setNewPlaybookUrl] = useState("");
+  const [newPlaybookThreshold, setNewPlaybookThreshold] = useState(85);
+  const [dispatchingSoar, setDispatchingSoar] = useState(false);
 
   // Custom Org Log Ingestion (in Contact drawer)
   const [orgName, setOrgName] = useState("Sentinel-Core-SOC");
@@ -187,11 +206,13 @@ export default function App() {
         if (typeFilter && typeFilter !== "all") params.set("ioc_type", typeFilter);
         if (query && query.trim()) params.set("search", query.trim());
 
-        const [iocsRes, sourcesRes, mlRes, triageRes] = await Promise.all([
+        const [iocsRes, sourcesRes, mlRes, triageRes, auditRes, soarRes] = await Promise.all([
           fetch(`${API_BASE}/iocs?${params.toString()}`),
           fetch(`${API_BASE}/feeds/sources`),
           fetch(`${API_BASE}/ml/status`),
           fetch(`${API_BASE}/triage/queue`),
+          fetch(`${API_BASE}/rbac/audit-logs`),
+          fetch(`${API_BASE}/soar/playbooks`),
         ]);
 
         if (iocsRes.ok) setIocs(await iocsRes.json());
@@ -204,6 +225,15 @@ export default function App() {
           const tData = await triageRes.json();
           if (Array.isArray(tData.triage_queue)) setTriageQueue(tData.triage_queue);
           if (tData.stream_stats) setStreamStats(tData.stream_stats);
+        }
+        if (auditRes.ok) {
+          const aData = await auditRes.json();
+          setAuditLogs(aData.audit_logs || []);
+        }
+        if (soarRes.ok) {
+          const pData = await soarRes.json();
+          setSoarPlaybooks(pData.playbooks || []);
+          setSoarExecutions(pData.executions || []);
         }
       } catch (e) {
         console.warn("Could not load dashboard telemetry:", e);
@@ -293,6 +323,24 @@ export default function App() {
                   : item
               )
             );
+            if (payload.audit_log) {
+              setAuditLogs((prev) => [payload.audit_log, ...prev].slice(0, 40));
+            }
+            if (payload.active_learning?.model_summary) {
+              setMlSummary({
+                ...payload.active_learning.model_summary,
+                active_learning_count: payload.active_learning.active_learning_count,
+              });
+              setActiveLearningBanner(
+                `Active Learning Auto-Retrain: ${payload.active_learning.ioc_value} labeled as ${
+                  payload.active_learning.label === 1 ? "MALICIOUS (1)" : "BENIGN / FALSE POSITIVE (0)"
+                } · Ensemble recalibrated (Test F1: ${
+                  payload.active_learning.model_summary.metrics.f1_score
+                }%)`
+              );
+            }
+          } else if (payload.type === "soar:triggered" && payload.execution) {
+            setSoarExecutions((prev) => [payload.execution, ...prev].slice(0, 25));
           }
         } catch (err) {
           console.warn("[ThreatOps WS] Failed to parse message:", err);
@@ -346,18 +394,36 @@ export default function App() {
   };
 
   const handleTriageAction = async (queueId, action) => {
-    // Optimistic update
+    // RBAC check: Tier-1 Analyst can escalate, but Block/Dismiss requires Tier-3 Threat Hunter or SOC Lead
+    if (
+      user?.role === "Tier-1 Analyst" &&
+      (action === "approved_block" || action === "false_positive")
+    ) {
+      setActiveLearningBanner(
+        "RBAC Policy: 'Tier-1 Analyst' can Escalate indicators. Switch role to 'Tier-3 Threat Hunter' or 'SOC Lead' to execute Block or False-Positive Active Learning dispositions."
+      );
+      return;
+    }
+
     setTriageQueue((prev) =>
       prev.map((q) => (q.queue_id === queueId ? { ...q, triage_status: action } : q))
     );
     if (wsRef.current && wsRef.current.readyState === 1) {
       wsRef.current.send(
-        JSON.stringify({ type: "triage:action", queue_id: queueId, action })
+        JSON.stringify({
+          type: "triage:action",
+          queue_id: queueId,
+          action,
+          actor: user,
+        })
       );
     } else {
       await fetch(`${API_BASE}/triage/${queueId}/action`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
         body: JSON.stringify({ action }),
       });
     }
@@ -378,39 +444,124 @@ export default function App() {
     }
   };
 
-  // Bootstrap session if token exists
-  useEffect(() => {
-    if (token) {
-      fetch(`${API_BASE}/auth/me`, {
-        headers: { Authorization: `Bearer ${token}` },
-      })
-        .then((res) => (res.ok ? res.json() : Promise.reject()))
-        .then((data) => {
-          setUser(data);
-          loadDashboardData();
-        })
-        .catch(() => {
-          setToken("");
-          localStorage.removeItem("threatops_token");
-        });
+  const handleGoogleSignIn = async () => {
+    try {
+      const cred = await signInWithPopup(auth, googleAuthProvider);
+      const idToken = await cred.user.getIdToken();
+      setToken(idToken);
+      const res = await fetch(`${API_BASE}/auth/me`, {
+        headers: { Authorization: `Bearer ${idToken}` },
+      });
+      if (res.ok) {
+        setUser(await res.json());
+        loadDashboardData();
+      }
+    } catch (err) {
+      console.warn("Google Sign-In popup closed or cancelled:", err.message);
     }
-  }, [token, loadDashboardData]);
+  };
+
+  const handleSwitchRbacRole = async (newRole) => {
+    setUser((prev) => ({ ...prev, role: newRole }));
+    try {
+      const res = await fetch(`${API_BASE}/rbac/role`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ role: newRole }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setUser((prev) => ({ ...prev, role: data.role }));
+        if (data.audit_log) {
+          setAuditLogs((prev) => [data.audit_log, ...prev].slice(0, 40));
+        }
+      }
+    } catch (err) {
+      console.warn("Failed to switch RBAC role:", err);
+    }
+  };
+
+  const handleCreateSoarPlaybook = async (e) => {
+    e.preventDefault();
+    if (!newPlaybookName.trim() || !newPlaybookUrl.trim()) return;
+    const res = await fetch(`${API_BASE}/soar/playbooks`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      },
+      body: JSON.stringify({
+        name: newPlaybookName,
+        channel: newPlaybookChannel,
+        webhook_url: newPlaybookUrl,
+        min_risk_threshold: newPlaybookThreshold,
+      }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setSoarPlaybooks(data.playbooks || []);
+      setSoarExecutions(data.executions || []);
+      setNewPlaybookName("");
+      setNewPlaybookUrl("");
+    }
+  };
+
+  const handleTogglePlaybook = async (id, currentEnabled) => {
+    const res = await fetch(`${API_BASE}/soar/playbooks/${id}/toggle`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ enabled: currentEnabled === 1 ? 0 : 1 }),
+    });
+    if (res.ok) {
+      const data = await res.json();
+      setSoarPlaybooks(data.playbooks || []);
+      setSoarExecutions(data.executions || []);
+    }
+  };
+
+  const handleTestSoarDispatch = async () => {
+    setDispatchingSoar(true);
+    try {
+      const res = await fetch(`${API_BASE}/soar/dispatch`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          ioc_value: scanIoc || "http://194.55.186.21:54321/Mozi.a",
+          risk_score: 94,
+        }),
+      });
+      if (res.ok) {
+        const data = await res.json();
+        setSoarPlaybooks(data.playbooks || []);
+        setSoarExecutions(data.executions || []);
+      }
+    } finally {
+      setDispatchingSoar(false);
+    }
+  };
 
   const enterThreatOpsConsole = async (targetTab = "pipeline") => {
     setMenuOpen(false);
     setStageDrawer(null);
     setActiveTab(targetTab);
 
-    if (!token || !user) {
+    if (!token) {
       try {
         const res = await fetch(`${API_BASE}/auth/sso`, { method: "POST" });
         const data = await res.json();
         if (res.ok && data.access_token) {
-          localStorage.setItem("threatops_token", data.access_token);
           setToken(data.access_token);
           setUser({
+            uid: data.uid || "soc-lead-default-uid",
             email: data.email,
             full_name: data.full_name,
+            role: data.role || "SOC Lead",
             subscription_status: data.subscription_status,
           });
         }
@@ -510,10 +661,16 @@ export default function App() {
     try {
       const res = await fetch(`${API_BASE}/extract/report`, {
         method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ text: reportText }),
+        headers: {
+          "Content-Type": "application/json",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({ text: reportText, format: reportFormat }),
       });
-      if (res.ok) setReportResult(await res.json());
+      if (res.ok) {
+        setReportResult(await res.json());
+        loadDashboardData();
+      }
     } finally {
       setExtractingReport(false);
     }
@@ -1191,13 +1348,65 @@ export default function App() {
           </button>
         </nav>
 
-        <button
-          type="button"
-          className="console-btn-ghost"
-          onClick={() => setViewMode("stage")}
-        >
-          <ArrowLeft size={14} /> Stage
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 6,
+              background: "rgba(255,255,255,0.05)",
+              border: "1px solid rgba(255,255,255,0.14)",
+              borderRadius: 999,
+              padding: "4px 10px",
+              fontSize: "0.76rem",
+            }}
+          >
+            <Shield size={13} />
+            <select
+              aria-label="SOC RBAC Role"
+              value={user?.role || "SOC Lead"}
+              onChange={(e) => handleSwitchRbacRole(e.target.value)}
+              style={{
+                background: "transparent",
+                color: "var(--ink)",
+                border: "none",
+                fontSize: "0.76rem",
+                fontWeight: 600,
+                cursor: "pointer",
+                outline: "none",
+              }}
+            >
+              <option value="Tier-1 Analyst" style={{ background: "#0b0b0b" }}>
+                Tier-1 Analyst
+              </option>
+              <option value="Tier-3 Threat Hunter" style={{ background: "#0b0b0b" }}>
+                Tier-3 Threat Hunter
+              </option>
+              <option value="SOC Lead" style={{ background: "#0b0b0b" }}>
+                SOC Lead
+              </option>
+            </select>
+          </div>
+
+          <button
+            type="button"
+            className="console-btn-ghost"
+            style={{ padding: "7px 13px", fontSize: "0.78rem" }}
+            onClick={handleGoogleSignIn}
+          >
+            {user?.auth_provider === "firebase_google"
+              ? user.email
+              : "Google SSO"}
+          </button>
+
+          <button
+            type="button"
+            className="console-btn-ghost"
+            onClick={() => setViewMode("stage")}
+          >
+            <ArrowLeft size={14} /> Stage
+          </button>
+        </div>
       </header>
 
       <main className="console-main">
@@ -1491,9 +1700,40 @@ export default function App() {
                 </div>
                 <div className="mono-num" style={{ fontSize: "0.8rem", color: "var(--muted)" }}>
                   Streamed This Session: <strong style={{ color: "var(--ink)" }}>{streamStats.total_streamed}</strong> ·
-                  Staging Buffer: <strong style={{ color: "var(--ink)" }}>{streamStats.buffer_remaining}</strong>
+                  Staging Buffer: <strong style={{ color: "var(--ink)" }}>{streamStats.buffer_remaining}</strong> ·
+                  Active Learning Labels:{" "}
+                  <strong style={{ color: "var(--ink)" }}>
+                    {mlSummary?.active_learning_count || 0}
+                  </strong>
                 </div>
               </div>
+
+              {activeLearningBanner && (
+                <div
+                  style={{
+                    background: "rgba(255,255,255,0.06)",
+                    border: "1px solid rgba(255,255,255,0.2)",
+                    borderRadius: 10,
+                    padding: "10px 14px",
+                    marginBottom: 14,
+                    fontSize: "0.83rem",
+                    display: "flex",
+                    justifyContent: "space-between",
+                    alignItems: "center",
+                    gap: 12,
+                  }}
+                >
+                  <span>{activeLearningBanner}</span>
+                  <button
+                    type="button"
+                    className="console-tab"
+                    style={{ padding: "3px 8px", fontSize: "0.74rem" }}
+                    onClick={() => setActiveLearningBanner(null)}
+                  >
+                    Dismiss
+                  </button>
+                </div>
+              )}
 
               {/* Autonomous Triage Queue Table */}
               <div style={{ overflowX: "auto" }}>
@@ -1844,6 +2084,101 @@ export default function App() {
                         </td>
                       </tr>
                     ))}
+                  </tbody>
+                </table>
+              </div>
+            </div>
+
+            {/* Multi-Role SOC RBAC Audit Trail */}
+            <div className="console-surface">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Shield size={18} />
+                  <div>
+                    <h2 style={{ fontSize: "1.15rem", fontWeight: 500 }}>
+                      Multi-Role SOC RBAC & Disposition Audit Log
+                    </h2>
+                    <p style={{ color: "var(--muted)", fontSize: "0.82rem", marginTop: 2 }}>
+                      Active Role: <strong style={{ color: "var(--ink)" }}>{user?.role || "SOC Lead"}</strong> ({user?.email || "lead_analyst@threatops.io"}) · Tracks every analyst block, escalation, false-positive dismissal, and active learning retrain.
+                    </p>
+                  </div>
+                </div>
+                <div style={{ display: "flex", gap: 8 }}>
+                  {["Tier-1 Analyst", "Tier-3 Threat Hunter", "SOC Lead"].map((r) => (
+                    <button
+                      key={r}
+                      type="button"
+                      className={`console-tab ${user?.role === r ? "active" : ""}`}
+                      onClick={() => handleSwitchRbacRole(r)}
+                    >
+                      {r}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div style={{ overflowX: "auto" }}>
+                <table className="console-table">
+                  <thead>
+                    <tr>
+                      <th>Audit ID</th>
+                      <th>Analyst Identity</th>
+                      <th>RBAC Role</th>
+                      <th>Action</th>
+                      <th>Target IOC / Entity</th>
+                      <th>Audit Trail Details</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {auditLogs.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} style={{ color: "var(--muted)" }}>
+                          Execute a triage action (Block, Escalate, Dismiss) or switch RBAC roles to record audit entries.
+                        </td>
+                      </tr>
+                    ) : (
+                      auditLogs.slice(0, 12).map((log) => (
+                        <tr key={log.id}>
+                          <td className="mono-num" style={{ color: "var(--muted)" }}>
+                            #{log.id}
+                          </td>
+                          <td className="mono-num" style={{ fontSize: "0.82rem" }}>
+                            {log.userEmail}
+                          </td>
+                          <td>
+                            <span
+                              className="mono-num"
+                              style={{
+                                fontSize: "0.75rem",
+                                padding: "3px 8px",
+                                borderRadius: 999,
+                                background: "rgba(255,255,255,0.08)",
+                              }}
+                            >
+                              {log.userRole}
+                            </span>
+                          </td>
+                          <td className="mono-num" style={{ fontWeight: 600 }}>
+                            {log.action}
+                          </td>
+                          <td className="mono-num" style={{ maxWidth: 240, wordBreak: "break-all" }}>
+                            {log.targetIoc}
+                          </td>
+                          <td style={{ fontSize: "0.82rem", color: "var(--muted)" }}>
+                            {log.details}
+                          </td>
+                        </tr>
+                      ))
+                    )}
                   </tbody>
                 </table>
               </div>
@@ -2232,17 +2567,100 @@ export default function App() {
               </div>
             )}
 
-            {/* Unstructured Threat Advisory NLP & MITRE ATT&CK Extractor */}
+            {/* Deep Threat Report Analysis & Diamond-Model Attribution Engine */}
             <div className="console-surface">
-              <h2 style={{ fontSize: "1.15rem", fontWeight: 500, marginBottom: 12 }}>
-                Unstructured Threat Advisory NLP & MITRE ATT&CK Extractor
-              </h2>
-              <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginBottom: 14 }}>
-                Automatically refangs defanged indicators (`hxxp`, `[.]`), maps MITRE ATT&CK tactics, and
-                scores extracted IOCs with the trained ML ensemble:
-              </p>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  marginBottom: 14,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Compass size={18} />
+                  <div>
+                    <h2 style={{ fontSize: "1.15rem", fontWeight: 500 }}>
+                      Deep Threat Report Analysis & Diamond-Model Attribution Engine
+                    </h2>
+                    <p style={{ color: "var(--muted)", fontSize: "0.84rem", marginTop: 2 }}>
+                      Ingests unstructured PDF advisories, STIX 2.1 bundles, and Suricata EVE JSON / PCAP logs to generate Executive Incident Summaries and 4-vertex Diamond Model adversary attribution:
+                    </p>
+                  </div>
+                </div>
+
+                {/* One-click Sample Format Presets */}
+                <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+                  <button
+                    type="button"
+                    className={`console-tab ${reportFormat === "text_pdf" ? "active" : ""}`}
+                    onClick={() => {
+                      setReportFormat("text_pdf");
+                      setReportText(
+                        "Adversaries exploited CVE-2024-3400 using a spearphishing lure to deploy a second-stage dropper via powershell. The script executed wget against hxxp://185.220.101[.]45:8080/bin.sh and established a Cobalt Strike C2 beacon to 91.215.85[.]142 targeting financial banking infrastructure."
+                      );
+                    }}
+                  >
+                    PDF Advisory Sample
+                  </button>
+                  <button
+                    type="button"
+                    className={`console-tab ${reportFormat === "stix21" ? "active" : ""}`}
+                    onClick={() => {
+                      setReportFormat("stix21");
+                      setReportText(
+                        JSON.stringify(
+                          {
+                            type: "bundle",
+                            id: "bundle--apt29-campaign-2026",
+                            objects: [
+                              {
+                                type: "intrusion-set",
+                                name: "APT29 Cozy Bear",
+                              },
+                              {
+                                type: "malware",
+                                name: "Cobalt Strike Beacon Loader",
+                              },
+                              {
+                                type: "indicator",
+                                pattern: "[ipv4-addr:value = '185.220.101.45']",
+                                description: "Primary C2 callback node exploiting CVE-2024-3400",
+                              },
+                              {
+                                type: "indicator",
+                                pattern: "[url:value = 'http://194.55.186.21:54321/Mozi.a']",
+                                description: "Second-stage ELF payload delivery URL",
+                              },
+                            ],
+                          },
+                          null,
+                          2
+                        )
+                      );
+                    }}
+                  >
+                    STIX 2.1 Bundle
+                  </button>
+                  <button
+                    type="button"
+                    className={`console-tab ${reportFormat === "suricata_eve" ? "active" : ""}`}
+                    onClick={() => {
+                      setReportFormat("suricata_eve");
+                      setReportText(
+                        `{"timestamp":"2026-10-20T22:14:02.110Z","event_type":"alert","src_ip":"10.0.4.18","dest_ip":"185.220.101.45","dest_port":4444,"proto":"TCP","alert":{"signature":"ET MALWARE Cobalt Strike Beacon C2 Callback","category":"A Network Trojan was Detected","severity":1}}\n{"timestamp":"2026-10-20T22:14:08.512Z","event_type":"http","src_ip":"10.0.4.18","dest_ip":"91.215.85.142","dest_port":8080,"http":{"hostname":"secure-verify-sso.tk","url":"http://91.215.85.142:8080/gate.php","http_method":"POST"}}`
+                      );
+                    }}
+                  >
+                    Suricata EVE JSON / PCAP
+                  </button>
+                </div>
+              </div>
+
               <textarea
-                rows={4}
+                rows={5}
                 className="console-input mono-num"
                 style={{ width: "100%", borderRadius: 12, marginBottom: 14 }}
                 value={reportText}
@@ -2255,11 +2673,133 @@ export default function App() {
                 disabled={extractingReport}
               >
                 <FileText size={15} />{" "}
-                {extractingReport ? "Extracting Intelligence..." : "Extract IOCs & MITRE TTPs"}
+                {extractingReport
+                  ? "Running Deep Attribution & Scoring..."
+                  : "Run Deep Analysis & Diamond-Model Attribution"}
               </button>
 
               {reportResult && (
-                <div style={{ marginTop: 20, display: "grid", gap: 16 }}>
+                <div style={{ marginTop: 22, display: "grid", gap: 18 }}>
+                  {/* Executive Incident Summary */}
+                  {reportResult.executive_summary && (
+                    <div
+                      className="console-kpi-card"
+                      style={{
+                        borderColor: "rgba(255,255,255,0.24)",
+                        background: "#050505",
+                        padding: 20,
+                      }}
+                    >
+                      <div
+                        style={{
+                          display: "flex",
+                          justifyContent: "space-between",
+                          alignItems: "center",
+                          flexWrap: "wrap",
+                          gap: 10,
+                          marginBottom: 10,
+                        }}
+                      >
+                        <div style={{ fontWeight: 700, fontSize: "1.05rem" }}>
+                          {reportResult.executive_summary.headline}
+                        </div>
+                        <span
+                          className="mono-num"
+                          style={{
+                            padding: "4px 10px",
+                            borderRadius: 999,
+                            background: "#ffffff",
+                            color: "#050505",
+                            fontSize: "0.75rem",
+                            fontWeight: 700,
+                          }}
+                        >
+                          {reportResult.executive_summary.severity} · MAX RISK{" "}
+                          {reportResult.executive_summary.max_risk_score}/100
+                        </span>
+                      </div>
+                      <p style={{ color: "var(--muted)", fontSize: "0.88rem", lineHeight: 1.6, marginBottom: 12 }}>
+                        {reportResult.executive_summary.narrative}
+                      </p>
+                      <div style={{ fontSize: "0.82rem" }}>
+                        <strong style={{ color: "var(--ink)" }}>Recommended Containment Playbook:</strong>
+                        <ul style={{ margin: "6px 0 0 18px", color: "var(--muted)", lineHeight: 1.55 }}>
+                          {(reportResult.executive_summary.containment_actions || []).map((act, i) => (
+                            <li key={i}>{act}</li>
+                          ))}
+                        </ul>
+                      </div>
+                    </div>
+                  )}
+
+                  {/* 4-Vertex Diamond Model of Intrusion Analysis */}
+                  {reportResult.diamond_model && (
+                    <div>
+                      <div style={{ fontSize: "0.88rem", fontWeight: 600, marginBottom: 10 }}>
+                        Diamond Model of Intrusion Analysis Attribution
+                      </div>
+                      <div
+                        style={{
+                          display: "grid",
+                          gridTemplateColumns: "repeat(auto-fit, minmax(230px, 1fr))",
+                          gap: 14,
+                        }}
+                      >
+                        <div className="console-kpi-card">
+                          <div style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                            VERTEX 1 · ADVERSARY
+                          </div>
+                          <div style={{ fontWeight: 700, fontSize: "1rem", marginTop: 4 }}>
+                            {reportResult.diamond_model.adversary.attributed_group}
+                          </div>
+                          <div style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 6 }}>
+                            Nexus: {reportResult.diamond_model.adversary.origin_nexus}
+                          </div>
+                          <div className="mono-num" style={{ fontSize: "0.8rem", marginTop: 4 }}>
+                            Confidence: {reportResult.diamond_model.adversary.confidence_pct}%
+                          </div>
+                        </div>
+
+                        <div className="console-kpi-card">
+                          <div style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                            VERTEX 2 · INFRASTRUCTURE
+                          </div>
+                          <div className="mono-num" style={{ fontWeight: 600, fontSize: "0.86rem", marginTop: 4 }}>
+                            C2: {(reportResult.diamond_model.infrastructure.c2_ipv4_nodes || []).join(", ")}
+                          </div>
+                          <div style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 6 }}>
+                            {reportResult.diamond_model.infrastructure.network_topology}
+                          </div>
+                        </div>
+
+                        <div className="console-kpi-card">
+                          <div style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                            VERTEX 3 · CAPABILITY
+                          </div>
+                          <div style={{ fontWeight: 600, fontSize: "0.88rem", marginTop: 4 }}>
+                            {reportResult.diamond_model.capability.malware_tooling}
+                          </div>
+                          <div className="mono-num" style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 6 }}>
+                            Exploits: {(reportResult.diamond_model.capability.exploited_cves || []).join(", ")}
+                          </div>
+                        </div>
+
+                        <div className="console-kpi-card">
+                          <div style={{ fontSize: "0.74rem", color: "var(--muted)" }}>
+                            VERTEX 4 · VICTIM / TARGET
+                          </div>
+                          <div style={{ fontWeight: 600, fontSize: "0.88rem", marginTop: 4 }}>
+                            {reportResult.diamond_model.victim.targeted_sector}
+                          </div>
+                          <div style={{ fontSize: "0.8rem", color: "var(--muted)", marginTop: 6 }}>
+                            Surface: {reportResult.diamond_model.victim.attack_surface} · SLA:{" "}
+                            {reportResult.diamond_model.victim.recommended_sla}
+                          </div>
+                        </div>
+                      </div>
+                    </div>
+                  )}
+
                   <div className="console-kpi-card">
                     <div style={{ fontWeight: 600, marginBottom: 8 }}>
                       Detected MITRE ATT&CK Techniques ({reportResult.mitre_attack_ttps.length})
@@ -2526,6 +3066,203 @@ export default function App() {
                   </pre>
                 </div>
               )}
+            </div>
+
+            {/* AUTOMATED SOAR PLAYBOOKS & OUTBOUND WEBHOOK DISPATCH */}
+            <div className="console-surface">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  flexWrap: "wrap",
+                  gap: 12,
+                  marginBottom: 18,
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 10 }}>
+                  <Webhook size={18} />
+                  <div>
+                    <h2 style={{ fontSize: "1.15rem", fontWeight: 500 }}>
+                      Automated SOAR Playbooks & Outbound Webhook Dispatch
+                    </h2>
+                    <p style={{ color: "var(--muted)", fontSize: "0.84rem", marginTop: 2 }}>
+                      Automatically executes Slack SOC alerts, PagerDuty incidents, Cloudflare WAF blocks, and Google Workspace Gmail phishing quarantine whenever /ws/threat-stream scores an IOC ≥ 85/100:
+                    </p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  className="console-btn-pill"
+                  onClick={handleTestSoarDispatch}
+                  disabled={dispatchingSoar}
+                >
+                  <Zap size={15} />{" "}
+                  {dispatchingSoar
+                    ? "Dispatching Webhooks..."
+                    : "Test Trigger All Playbooks (Risk 94/100)"}
+                </button>
+              </div>
+
+              {/* Configured Playbook Cards */}
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                  gap: 14,
+                  marginBottom: 20,
+                }}
+              >
+                {soarPlaybooks.map((pb) => (
+                  <div key={pb.id} className="console-kpi-card">
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        alignItems: "center",
+                        marginBottom: 8,
+                      }}
+                    >
+                      <span style={{ fontWeight: 600, fontSize: "0.94rem" }}>{pb.name}</span>
+                      <button
+                        type="button"
+                        className={`console-tab ${pb.enabled === 1 ? "active" : ""}`}
+                        style={{ padding: "3px 10px", fontSize: "0.72rem" }}
+                        onClick={() => handleTogglePlaybook(pb.id, pb.enabled)}
+                      >
+                        {pb.enabled === 1 ? "ENABLED" : "PAUSED"}
+                      </button>
+                    </div>
+                    <div className="mono-num" style={{ fontSize: "0.75rem", color: "var(--muted)", wordBreak: "break-all" }}>
+                      {pb.webhookUrl}
+                    </div>
+                    <div
+                      style={{
+                        display: "flex",
+                        justifyContent: "space-between",
+                        marginTop: 12,
+                        paddingTop: 10,
+                        borderTop: "1px solid rgba(255,255,255,0.08)",
+                        fontSize: "0.78rem",
+                        color: "var(--muted)",
+                      }}
+                    >
+                      <span>Threshold: ≥ {pb.minRiskThreshold}/100</span>
+                      <span className="mono-num" style={{ color: "var(--ink)", fontWeight: 600 }}>
+                        {pb.triggerCount} Dispatches
+                      </span>
+                    </div>
+                  </div>
+                ))}
+              </div>
+
+              {/* Add Custom Webhook Playbook Form */}
+              <form
+                onSubmit={handleCreateSoarPlaybook}
+                style={{
+                  display: "flex",
+                  gap: 10,
+                  flexWrap: "wrap",
+                  marginBottom: 22,
+                  paddingTop: 14,
+                  borderTop: "1px solid rgba(255,255,255,0.08)",
+                }}
+              >
+                <input
+                  type="text"
+                  className="console-input"
+                  style={{ flex: 1, minWidth: 180 }}
+                  placeholder="Playbook Name (e.g. Teams Tier-1 Alert)"
+                  value={newPlaybookName}
+                  onChange={(e) => setNewPlaybookName(e.target.value)}
+                />
+                <select
+                  className="console-input"
+                  value={newPlaybookChannel}
+                  onChange={(e) => setNewPlaybookChannel(e.target.value)}
+                >
+                  <option value="slack" style={{ background: "#0b0b0b" }}>Slack / Teams Webhook</option>
+                  <option value="pagerduty" style={{ background: "#0b0b0b" }}>PagerDuty Incident API</option>
+                  <option value="cloudflare_waf" style={{ background: "#0b0b0b" }}>Cloudflare WAF Blocklist</option>
+                  <option value="gmail_quarantine" style={{ background: "#0b0b0b" }}>Google Workspace Gmail Quarantine</option>
+                </select>
+                <input
+                  type="text"
+                  className="console-input mono-num"
+                  style={{ flex: 2, minWidth: 240 }}
+                  placeholder="https://hooks.slack.com/services/..."
+                  value={newPlaybookUrl}
+                  onChange={(e) => setNewPlaybookUrl(e.target.value)}
+                />
+                <input
+                  type="number"
+                  min={50}
+                  max={100}
+                  className="console-input mono-num"
+                  style={{ width: 90 }}
+                  value={newPlaybookThreshold}
+                  onChange={(e) => setNewPlaybookThreshold(Number(e.target.value) || 85)}
+                />
+                <button type="submit" className="console-btn-pill">
+                  <Plus size={15} /> Add Playbook
+                </button>
+              </form>
+
+              {/* Recent Automated SOAR Webhook Executions */}
+              <div style={{ overflowX: "auto" }}>
+                <table className="console-table">
+                  <thead>
+                    <tr>
+                      <th>Playbook</th>
+                      <th>Channel</th>
+                      <th>Triggered IOC</th>
+                      <th>Risk Score</th>
+                      <th>Delivery Status</th>
+                      <th>Dispatched Webhook Payload</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {soarExecutions.length === 0 ? (
+                      <tr>
+                        <td colSpan={6} style={{ color: "var(--muted)" }}>
+                          Waiting for incoming IOC with Risk Score ≥ 85/100 or click "Test Trigger All Playbooks".
+                        </td>
+                      </tr>
+                    ) : (
+                      soarExecutions.slice(0, 10).map((ex) => (
+                        <tr key={ex.id}>
+                          <td style={{ fontWeight: 500 }}>{ex.playbookName}</td>
+                          <td className="mono-num" style={{ color: "var(--muted)" }}>
+                            {ex.channel.toUpperCase()}
+                          </td>
+                          <td className="mono-num" style={{ maxWidth: 240, wordBreak: "break-all" }}>
+                            {ex.iocValue}
+                          </td>
+                          <td className="mono-num" style={{ fontWeight: 700 }}>
+                            {ex.riskScore}/100
+                          </td>
+                          <td className="mono-num" style={{ fontSize: "0.78rem" }}>
+                            {ex.deliveryStatus}
+                          </td>
+                          <td
+                            className="mono-num"
+                            style={{
+                              maxWidth: 340,
+                              fontSize: "0.75rem",
+                              color: "var(--muted)",
+                              whiteSpace: "nowrap",
+                              overflow: "hidden",
+                              textOverflow: "ellipsis",
+                            }}
+                          >
+                            {ex.payloadPreview}
+                          </td>
+                        </tr>
+                      ))
+                    )}
+                  </tbody>
+                </table>
+              </div>
             </div>
           </div>
         )}
