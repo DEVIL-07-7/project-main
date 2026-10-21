@@ -1,34 +1,64 @@
-import React, { useState, useEffect } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+import React, { useState, useEffect, useCallback } from "react";
 import ForceGraph2D from "react-force-graph-2d";
 import {
-  Shield,
   Activity,
-  Layers,
   Cpu,
   Network,
   FileCode,
   Share2,
   TrendingUp,
-  CreditCard,
-  Lock,
-  LogOut,
   RefreshCw,
-  Search,
   CheckCircle2,
   AlertTriangle,
-  Server,
   Zap,
-  Clock,
   Terminal,
+  ArrowLeft,
+  X,
+  FileText,
 } from "lucide-react";
 
 const API_BASE = "/api/v1";
+const VIDEO_URL =
+  "https://d8j0ntlcm91z4.cloudfront.net/user_38xzZboKViGWJOttwIXH07lWA1P/hf_20260808_112712_da9d53df-6d27-4b12-bdf6-aa9dc2622bdf.mp4";
+
+function BrandMarkSvg({ idSuffix = "" }) {
+  const gradId = `bg1${idSuffix}`;
+  return (
+    <svg viewBox="0 0 31.5 48.5" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+      <defs>
+        <linearGradient id={gradId} x1="8" y1="0" x2="34.1" y2="28.9" gradientUnits="userSpaceOnUse">
+          <stop offset="0" stopColor="#9e9e9e" />
+          <stop offset="0.28" stopColor="#a6a6a6" />
+          <stop offset="0.34" stopColor="#a3a3a3" />
+          <stop offset="0.40" stopColor="#3a3a3a" />
+          <stop offset="0.55" stopColor="#414141" />
+          <stop offset="0.60" stopColor="#7a7a7a" />
+          <stop offset="0.68" stopColor="#8e8e8e" />
+          <stop offset="0.80" stopColor="#a9a9a9" />
+          <stop offset="0.95" stopColor="#c4c4c4" />
+          <stop offset="1" stopColor="#cccccc" />
+        </linearGradient>
+      </defs>
+      <path
+        d="M21.5 0 L21.5 19.5 L31.5 19.5 L31.5 29 L10 48.5 L10 28.5 L0.5 28.5 L0.5 18.5 Z"
+        fill={`url(#${gradId})`}
+      />
+      <rect x="0.5" y="18.5" width="9" height="10" fill="#fdfdfd" />
+      <rect x="22" y="19.5" width="9.5" height="9.5" fill="#fdfdfd" />
+    </svg>
+  );
+}
 
 export default function App() {
+  // Stage vs Console state
+  const [viewMode, setViewMode] = useState("stage"); // "stage" | "console"
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [stageDrawer, setStageDrawer] = useState(null); // null | "about" | "features" | "faq" | "contact"
+
+  // Auth & Console state
   const [token, setToken] = useState(localStorage.getItem("threatops_token") || "");
   const [user, setUser] = useState(null);
-  const [activeTab, setActiveTab] = useState("pipeline"); // pipeline, ensemble, graph, rules, siem, impact, pricing
+  const [activeTab, setActiveTab] = useState("pipeline"); // pipeline, ensemble, graph, rules, enrich, siem, impact
 
   // Live IOC feed & metrics state
   const [iocs, setIocs] = useState([]);
@@ -40,6 +70,13 @@ export default function App() {
   const [scanIoc, setScanIoc] = useState("http://194.55.186.21:54321/Mozi.a");
   const [scanResult, setScanResult] = useState(null);
   const [scanning, setScanning] = useState(false);
+
+  // NLP Report Extractor state
+  const [reportText, setReportText] = useState(
+    "Adversaries exploited CVE-2024-3400 using a spearphishing lure to deploy a second-stage dropper via powershell. The script executed wget against hxxp://185.220.101[.]45:8080/bin.sh and established a Cobalt Strike C2 beacon to 91.215.85[.]142."
+  );
+  const [reportResult, setReportResult] = useState(null);
+  const [extractingReport, setExtractingReport] = useState(false);
 
   // Graph state (Neo4j)
   const [graphData, setGraphData] = useState({ nodes: [], links: [] });
@@ -58,26 +95,62 @@ export default function App() {
   const [selectedSiem, setSelectedSiem] = useState("splunk");
   const [exportData, setExportData] = useState(null);
 
-  // Check URL params for Easebuzz payment return
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    if (params.get("success") === "true") {
-      localStorage.setItem("threatops_subscribed", "true");
-      window.history.replaceState({}, document.title, window.location.pathname);
-      if (user) setUser({ ...user, subscription_status: "active" });
-    }
-  }, [user]);
+  // Custom Org Log Ingestion (in Contact drawer)
+  const [orgName, setOrgName] = useState("Sentinel-Core-SOC");
+  const [orgLogs, setOrgLogs] = useState(
+    "2026-10-20T14:22:01Z DENY TCP 10.0.4.15 -> 185.220.101.45:3389\n2026-10-20T14:22:09Z ALERT GET http://115.55.236.110:45921/Mozi.m"
+  );
+  const [orgIngestStatus, setOrgIngestStatus] = useState(null);
 
-  // Auth profile bootstrap
+  // Toggle body overflow class when switching between locked stage and scrollable console
+  useEffect(() => {
+    if (viewMode === "console") {
+      document.body.classList.add("console-active");
+    } else {
+      document.body.classList.remove("console-active");
+    }
+  }, [viewMode]);
+
+  // Escape & resize > 1.1 aspect listeners for Stage menu & drawers
+  useEffect(() => {
+    const onKeyDown = (e) => {
+      if (e.key === "Escape") {
+        setMenuOpen(false);
+        setStageDrawer(null);
+      }
+    };
+    const onResize = () => {
+      if (window.innerWidth / Math.max(window.innerHeight, 1) > 1.1) {
+        setMenuOpen(false);
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("resize", onResize);
+    };
+  }, []);
+
+  const loadDashboardData = useCallback(async (typeFilter = filterType, query = searchQuery) => {
+    try {
+      const params = new URLSearchParams({ limit: "40" });
+      if (typeFilter && typeFilter !== "all") params.set("ioc_type", typeFilter);
+      if (query && query.trim()) params.set("search", query.trim());
+      const res = await fetch(`${API_BASE}/iocs?${params.toString()}`);
+      if (res.ok) setIocs(await res.json());
+    } catch (e) {
+      console.warn("Could not load IOCs:", e);
+    }
+  }, [filterType, searchQuery]);
+
+  // Bootstrap session if token exists
   useEffect(() => {
     if (token) {
       fetch(`${API_BASE}/auth/me`, {
         headers: { Authorization: `Bearer ${token}` },
       })
-        .then((res) => {
-          if (res.ok) return res.json();
-          throw new Error("Session invalid");
-        })
+        .then((res) => (res.ok ? res.json() : Promise.reject()))
         .then((data) => {
           setUser(data);
           loadDashboardData();
@@ -87,34 +160,37 @@ export default function App() {
           localStorage.removeItem("threatops_token");
         });
     }
-  }, [token]);
+  }, [token, loadDashboardData]);
 
-  const loadDashboardData = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/iocs?limit=40`);
-      if (res.ok) setIocs(await res.json());
-    } catch (e) {
-      console.warn("Could not load IOCs:", e);
-    }
-  };
+  const enterThreatOpsConsole = async (targetTab = "pipeline") => {
+    setMenuOpen(false);
+    setStageDrawer(null);
+    setActiveTab(targetTab);
 
-  const handleSsoAuthenticate = async () => {
-    try {
-      const res = await fetch(`${API_BASE}/auth/sso`, { method: "POST" });
-      const data = await res.json();
-      if (res.ok && data.access_token) {
-        localStorage.setItem("threatops_token", data.access_token);
-        setToken(data.access_token);
-        setUser({
-          email: data.email,
-          full_name: data.full_name,
-          subscription_status: data.subscription_status,
-        });
-        loadDashboardData();
+    if (!token || !user) {
+      try {
+        const res = await fetch(`${API_BASE}/auth/sso`, { method: "POST" });
+        const data = await res.json();
+        if (res.ok && data.access_token) {
+          localStorage.setItem("threatops_token", data.access_token);
+          setToken(data.access_token);
+          setUser({
+            email: data.email,
+            full_name: data.full_name,
+            subscription_status: data.subscription_status,
+          });
+        }
+      } catch (err) {
+        console.error("SSO authentication error:", err);
       }
-    } catch (err) {
-      console.error("SSO handshake error:", err);
     }
+
+    await loadDashboardData();
+    if (targetTab === "graph") handleFetchGraph();
+    if (targetTab === "rules") handleGenerateRules();
+    if (targetTab === "enrich") handleExecuteEnrichment();
+    if (targetTab === "siem") handleExportSiem("splunk");
+    setViewMode("console");
   };
 
   const handleScanIndicator = async () => {
@@ -128,6 +204,30 @@ export default function App() {
       if (res.ok) setScanResult(await res.json());
     } finally {
       setScanning(false);
+    }
+  };
+
+  const handleExtractReport = async () => {
+    setExtractingReport(true);
+    try {
+      const res = await fetch(`${API_BASE}/extract/report`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ text: reportText }),
+      });
+      if (res.ok) setReportResult(await res.json());
+    } finally {
+      setExtractingReport(false);
+    }
+  };
+
+  const handleRefreshFeeds = async () => {
+    setRefreshing(true);
+    try {
+      await fetch(`${API_BASE}/feeds/refresh`, { method: "POST" });
+      await loadDashboardData();
+    } finally {
+      setRefreshing(false);
     }
   };
 
@@ -165,584 +265,1347 @@ export default function App() {
     if (res.ok) setExportData(await res.json());
   };
 
-  const handleEasebuzzSubscribe = async (tier) => {
-    const res = await fetch(`${API_BASE}/auth/create-checkout-session`, {
+  const handleIngestOrgFeed = async (e) => {
+    e.preventDefault();
+    const lines = orgLogs
+      .split("\n")
+      .map((l) => l.trim())
+      .filter(Boolean);
+    const res = await fetch(`${API_BASE}/org/ingest-feed`, {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${token}`,
-      },
-      body: JSON.stringify({ tier }),
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        organization_name: orgName,
+        log_type: "firewall",
+        raw_logs: lines,
+      }),
     });
-    const data = await res.json();
-    if (data.checkout_url) window.location.href = data.checkout_url;
+    if (res.ok) {
+      setOrgIngestStatus(await res.json());
+      loadDashboardData();
+    }
   };
 
-  // --- 1. ENTERPRISE AUTHENTICATION SCREEN ---
-  if (!token || !user) {
+  const openNavDrawer = (e, section) => {
+    e.preventDefault();
+    setMenuOpen(false);
+    setStageDrawer(section);
+  };
+
+  // ════════════════════════════════════════════════════════════════════════
+  // VIEW 1: PIXEL-FAITHFUL DARK CINEMATIC LANDING STAGE (1487 × 1058 SPEC)
+  // ════════════════════════════════════════════════════════════════════════
+  if (viewMode === "stage") {
     return (
-      <div className="app-shell" style={{ justifyContent: "center", alignItems: "center" }}>
-        <div className="threatops-bg-canvas" />
-        <div className="threatops-grid-pattern" />
-
-        <motion.div initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} className="threat-panel" style={{ width: 480, textAlign: "center", padding: 36 }}>
-          <div style={{ display: "inline-flex", padding: 14, background: "rgba(0, 242, 254, 0.12)", borderRadius: 14, marginBottom: 18 }}>
-            <Shield size={44} color="#00f2fe" />
-          </div>
-          <h1 className="brand-name" style={{ fontSize: "2rem", marginBottom: 6 }}>ThreatOps</h1>
-          <p style={{ color: "var(--text-secondary)", fontSize: "0.88rem", marginBottom: 8 }}>
-            Enterprise Threat Intelligence Platform
-          </p>
-          <p style={{ color: "var(--text-muted)", fontSize: "0.78rem", marginBottom: 28 }}>
-            Automated IOC Analysis · ML-Powered Detection · Graph Correlation
-          </p>
-
-          <button className="btn-cyber-primary" style={{ width: "100%", justifyContent: "center", padding: "12px 20px" }} onClick={handleSsoAuthenticate}>
-            <Lock size={16} /> Authenticate via OAuth 2.0 / SAML[cite: 1]
-          </button>
-
-          <div style={{ marginTop: 24, paddingTop: 18, borderTop: "1px solid var(--border-color)", display: "flex", justifyContent: "space-around", fontSize: "0.75rem", color: "var(--text-muted)" }}>
-            <span>96.2% Accuracy[cite: 1]</span>
-            <span>&lt; 13s Triage[cite: 1]</span>
-            <span>SOC 2 Type II[cite: 1]</span>
-          </div>
-        </motion.div>
-      </div>
-    );
-  }
-
-  // --- 2. EASEBUZZ SUBSCRIPTION PAYWALL (IF INACTIVE) ---
-  const isSubscribed = user.subscription_status === "active" || localStorage.getItem("threatops_subscribed") === "true";
-  if (!isSubscribed) {
-    return (
-      <div className="app-shell" style={{ justifyContent: "center", alignItems: "center", padding: 24 }}>
-        <div className="threatops-bg-canvas" />
-        <div className="threatops-grid-pattern" />
-
-        <div style={{ maxWidth: 1100, width: "100%" }}>
-          <div style={{ textAlign: "center", marginBottom: 36 }}>
-            <h2 style={{ fontSize: "2.2rem", fontWeight: 800 }}>Transparent Pricing[cite: 1]</h2>
-            <p style={{ color: "var(--text-secondary)", marginTop: 6 }}>
-              Flexible tiers for teams of every size — start in 1 day (Secured by Easebuzz)[cite: 1]
-            </p>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(310px, 1fr))", gap: 20 }}>
-            {/* Starter Plan (Slide 9) */}
-            <div className="threat-panel" style={{ textAlign: "center" }}>
-              <h3 style={{ fontSize: "1.3rem" }}>Starter[cite: 1]</h3>
-              <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--brand-cyan)", margin: "14px 0" }}>$2,499<span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>/mo[cite: 1]</span></div>
-              <ul style={{ textAlign: "left", color: "var(--text-secondary)", fontSize: "0.85rem", listStyle: "none", padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />1,000 IOCs/day[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />5 users[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />Email support[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />Full feature access[cite: 1]</li>
-              </ul>
-              <button className="btn-cyber-outline" style={{ width: "100%", justifyContent: "center", marginTop: 24 }} onClick={() => handleEasebuzzSubscribe("starter")}>
-                Select Starter (Easebuzz)[cite: 1]
-              </button>
-            </div>
-
-            {/* Professional Plan (Slide 9 - Most Popular) */}
-            <div className="threat-panel" style={{ textAlign: "center", borderColor: "var(--brand-cyan)", position: "relative" }}>
-              <div style={{ position: "absolute", top: -12, left: "50%", transform: "translateX(-50%)", background: "var(--brand-cyan)", color: "#000", fontSize: "0.7rem", fontWeight: 800, padding: "2px 10px", borderRadius: 999 }}>
-                MOST POPULAR[cite: 1]
-              </div>
-              <h3 style={{ fontSize: "1.3rem" }}>Professional[cite: 1]</h3>
-              <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--brand-cyan)", margin: "14px 0" }}>$5,999<span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>/mo[cite: 1]</span></div>
-              <ul style={{ textAlign: "left", color: "var(--text-secondary)", fontSize: "0.85rem", listStyle: "none", padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />10,000 IOCs/day[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />20 users[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />24/7 Phone[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />Priority onboarding[cite: 1]</li>
-              </ul>
-              <button className="btn-cyber-primary" style={{ width: "100%", justifyContent: "center", marginTop: 24 }} onClick={() => handleEasebuzzSubscribe("professional")}>
-                Select Professional (Easebuzz)[cite: 1]
-              </button>
-            </div>
-
-            {/* Enterprise Plan (Slide 9) */}
-            <div className="threat-panel" style={{ textAlign: "center" }}>
-              <h3 style={{ fontSize: "1.3rem" }}>Enterprise[cite: 1]</h3>
-              <div style={{ fontSize: "2.2rem", fontWeight: 800, color: "var(--brand-cyan)", margin: "14px 0" }}>$14,999<span style={{ fontSize: "0.9rem", color: "var(--text-muted)" }}>/mo[cite: 1]</span></div>
-              <ul style={{ textAlign: "left", color: "var(--text-secondary)", fontSize: "0.85rem", listStyle: "none", padding: 0, display: "flex", flexDirection: "column", gap: 10 }}>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />Unlimited IOCs[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />Unlimited users[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />Dedicated CSM[cite: 1]</li>
-                <li><CheckCircle2 size={16} color="#10b981" style={{ verticalAlign: "middle", marginRight: 8 }} />Custom integrations[cite: 1]</li>
-              </ul>
-              <button className="btn-cyber-outline" style={{ width: "100%", justifyContent: "center", marginTop: 24 }} onClick={() => handleEasebuzzSubscribe("enterprise")}>
-                Select Enterprise (Easebuzz)[cite: 1]
-              </button>
-            </div>
-          </div>
-        </div>
-      </div>
-    );
-  }
-
-  // --- 3. MAIN DASHBOARD WITH NON-OVERLAPPING STICKY TOP NAVBAR ---
-  return (
-    <div className="app-shell">
-      <div className="threatops-bg-canvas" />
-      <div className="threatops-grid-pattern" />
-
-      {/* TOP NAVIGATION BAR (DOES NOT OVERLAP MAIN VIEWPORT) */}
-      <header className="top-navbar">
-        <div className="brand-wrapper">
-          <Shield size={28} color="#00f2fe" />
-          <div>
-            <span className="brand-name">ThreatOps</span>
-            <span className="brand-badge" style={{ marginLeft: 8 }}>ENTERPRISE[cite: 1]</span>
-          </div>
+      <div className={`stage${menuOpen ? " is-open" : ""}`}>
+        {/* Full-bleed CloudFront looping video plate */}
+        <div className="plate">
+          <video
+            className="plate-video"
+            autoPlay
+            muted
+            loop
+            playsInline
+            preload="auto"
+            aria-hidden="true"
+          >
+            <source src={VIDEO_URL} type="video/mp4" />
+          </video>
         </div>
 
-        <nav className="nav-links-row">
-          <button className={`nav-pill-btn ${activeTab === "pipeline" ? "active" : ""}`} onClick={() => setActiveTab("pipeline")}>
-            <Activity size={15} /> 13s Pipeline[cite: 1]
+        {/* Topbar: Brand SVG + Centered Primary Links + White Pill CTA + Mobile Burger */}
+        <header className="topbar">
+          <a
+            href="#top"
+            className="brand"
+            aria-label="Home"
+            onClick={(e) => {
+              e.preventDefault();
+              setMenuOpen(false);
+              setStageDrawer(null);
+            }}
+          >
+            <BrandMarkSvg />
+          </a>
+
+          <nav className="links" aria-label="Primary">
+            <a href="#about" onClick={(e) => openNavDrawer(e, "about")}>
+              About
+            </a>
+            <a href="#features" onClick={(e) => openNavDrawer(e, "features")}>
+              Features
+            </a>
+            <a href="#faq" onClick={(e) => openNavDrawer(e, "faq")}>
+              FAQ
+            </a>
+            <a href="#contact" onClick={(e) => openNavDrawer(e, "contact")}>
+              Contact
+            </a>
+          </nav>
+
+          <a
+            href="#console"
+            className="pill pill-nav"
+            onClick={(e) => {
+              e.preventDefault();
+              enterThreatOpsConsole("pipeline");
+            }}
+          >
+            <span>Get Started</span>
+          </a>
+
+          <button
+            type="button"
+            className="burger"
+            id="burger"
+            aria-label={menuOpen ? "Close menu" : "Open menu"}
+            aria-expanded={menuOpen}
+            aria-controls="menu"
+            onClick={() => setMenuOpen((prev) => !prev)}
+          >
+            <i />
+            <i />
           </button>
-          <button className={`nav-pill-btn ${activeTab === "ensemble" ? "active" : ""}`} onClick={() => setActiveTab("ensemble")}>
-            <Cpu size={15} /> 96.2% ML Engine[cite: 1]
-          </button>
-          <button className={`nav-pill-btn ${activeTab === "graph" ? "active" : ""}`} onClick={() => { setActiveTab("graph"); handleFetchGraph(); }}>
-            <Network size={15} /> Neo4j Graph[cite: 1]
-          </button>
-          <button className={`nav-pill-btn ${activeTab === "rules" ? "active" : ""}`} onClick={() => { setActiveTab("rules"); handleGenerateRules(); }}>
-            <FileCode size={15} /> Detection Rules[cite: 1]
-          </button>
-          <button className={`nav-pill-btn ${activeTab === "enrich" ? "active" : ""}`} onClick={() => { setActiveTab("enrich"); handleExecuteEnrichment(); }}>
-            <Zap size={15} /> 6-Source Enricher[cite: 1]
-          </button>
-          <button className={`nav-pill-btn ${activeTab === "siem" ? "active" : ""}`} onClick={() => { setActiveTab("siem"); handleExportSiem("splunk"); }}>
-            <Share2 size={15} /> SIEM / SOAR[cite: 1]
-          </button>
-          <button className={`nav-pill-btn ${activeTab === "impact" ? "active" : ""}`} onClick={() => setActiveTab("impact")}>
-            <TrendingUp size={15} /> ROI & Impact[cite: 1]
-          </button>
+        </header>
+
+        {/* Mobile Overlay Menu */}
+        <nav className="menu" id="menu" aria-hidden={!menuOpen}>
+          <div className="menu-inner">
+            <p className="menu-eyebrow">Menu</p>
+            <ul className="menu-list">
+              <li>
+                <a href="#about" onClick={(e) => openNavDrawer(e, "about")}>
+                  About
+                </a>
+              </li>
+              <li>
+                <a href="#features" onClick={(e) => openNavDrawer(e, "features")}>
+                  Features
+                </a>
+              </li>
+              <li>
+                <a href="#faq" onClick={(e) => openNavDrawer(e, "faq")}>
+                  FAQ
+                </a>
+              </li>
+              <li>
+                <a href="#contact" onClick={(e) => openNavDrawer(e, "contact")}>
+                  Contact
+                </a>
+              </li>
+            </ul>
+            <div className="menu-foot">
+              <a
+                href="#console"
+                className="pill"
+                onClick={(e) => {
+                  e.preventDefault();
+                  enterThreatOpsConsole("pipeline");
+                }}
+              >
+                <span>Get Started</span>
+              </a>
+              <a
+                href="#architecture"
+                className="ghost"
+                onClick={(e) => {
+                  e.preventDefault();
+                  enterThreatOpsConsole("ensemble");
+                }}
+              >
+                View Architecture
+              </a>
+            </div>
+          </div>
         </nav>
 
-        <div className="user-status-group">
-          <span style={{ fontSize: "0.8rem", color: "var(--text-secondary)" }}>{user.email}</span>
-          <button className="btn-cyber-outline" style={{ padding: "6px 10px" }} onClick={() => { setToken(""); setUser(null); }} title="Sign Out">
-            <LogOut size={14} />
-          </button>
-        </div>
-      </header>
+        {/* Hero Typography & Dual Actions */}
+        <main className="hero">
+          <h1 className="headline">
+            <span>The Next Layer</span>
+            <span>of Intelligence</span>
+          </h1>
+          <p className="sub">
+            <span>A unified infrastructure platform to help teams build,</span>
+            <span>ship, and scale AI systems with confidence.</span>
+          </p>
+          <div className="actions">
+            <a
+              href="#console"
+              className="pill pill-cta"
+              onClick={(e) => {
+                e.preventDefault();
+                enterThreatOpsConsole("pipeline");
+              }}
+            >
+              <span>Get Started</span>
+            </a>
+            <a
+              href="#architecture"
+              className="ghost"
+              onClick={(e) => {
+                e.preventDefault();
+                enterThreatOpsConsole("ensemble");
+              }}
+            >
+              View Architecture
+            </a>
+          </div>
+        </main>
 
-      {/* SECONDARY LIVE TELEMETRY TICKER (SLIDE 1 METRICS) */}
-      <aside className="live-telemetry-strip" aria-label="Platform Telemetry">
-        <div className="telemetry-chip">
-          <span style={{ color: "var(--text-muted)" }}>ML ACCURACY:</span>
-          <span className="telemetry-val">96.2%[cite: 1]</span>
-        </div>
-        <div className="telemetry-chip">
-          <span style={{ color: "var(--text-muted)" }}>PROCESSING RATE:</span>
-          <span className="telemetry-val">90,000+ IOCs / Day[cite: 1]</span>
-        </div>
-        <div className="telemetry-chip">
-          <span style={{ color: "var(--text-muted)" }}>AVG. RESPONSE:</span>
-          <span className="telemetry-val" style={{ color: "#a855f7" }}>13 sec (vs 24-48 hrs)[cite: 1]</span>
-        </div>
-        <div className="telemetry-chip">
-          <span style={{ color: "var(--text-muted)" }}>ANALYST TIME SAVED:</span>
-          <span className="telemetry-val" style={{ color: "#10b981" }}>70%[cite: 1]</span>
-        </div>
-        <div className="telemetry-chip">
-          <span style={{ color: "var(--text-muted)" }}>FALSE POSITIVES:</span>
-          <span className="telemetry-val">&lt; 1.8% (down from 40%)[cite: 1]</span>
-        </div>
-      </aside>
+        {/* Four Partner Logo Marks sitting in the bottom fade */}
+        <div className="logos" aria-label="Partner ecosystems">
+          {/* lg1: 30.5 x 31 — square frame with circular bite + circle path */}
+          <div className="lg lg1">
+            <svg viewBox="0 0 30 31" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <defs>
+                <mask id="lg1-bite">
+                  <rect width="30" height="31" fill="white" />
+                  <circle cx="19.5" cy="10.5" r="5.1" fill="black" />
+                </mask>
+              </defs>
+              <rect
+                x="2"
+                y="2.5"
+                width="26"
+                height="26"
+                rx="5"
+                fill="currentColor"
+                mask="url(#lg1-bite)"
+              />
+              <circle cx="19.5" cy="10.5" r="2.4" fill="#050505" />
+            </svg>
+            <span className="word">logoipsum</span>
+          </div>
 
-      {/* MAIN VIEWPORT (NEVER OVERLAPPED) */}
-      <main className="main-viewport">
-        <AnimatePresence mode="wait">
-          
-          {/* TAB 1: 13-SECOND PROCESSING PIPELINE (SLIDE 4) */}
-          {activeTab === "pipeline" && (
-            <motion.div key="pipeline" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-              <div style={{ marginBottom: 20 }}>
-                <h2 style={{ fontSize: "1.5rem", fontWeight: 800 }}>How It Works: 13-Second Triage Pipeline[cite: 1]</h2>
-                <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-                  From raw indicator to actionable detection — in under 13 seconds (vs. 24–48 hours manually)[cite: 1]
-                </p>
-              </div>
+          {/* lg2: 24.5 x 30 — vertical bar + circle yin-yang mask split + raised dot */}
+          <div className="lg lg2">
+            <svg viewBox="0 0 25 30" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <rect x="0.5" y="2" width="5.2" height="26" rx="2.6" fill="currentColor" />
+              <path
+                d="M15 4.5C20.2467 4.5 24.5 8.97715 24.5 14.5C24.5 20.0228 20.2467 24.5 15 24.5C9.75329 24.5 5.5 20.0228 5.5 14.5C5.5 8.97715 9.75329 4.5 15 4.5ZM15 8.8C11.9624 8.8 9.5 11.352 9.5 14.5C9.5 17.648 11.9624 20.2 15 20.2V8.8Z"
+                fill="currentColor"
+              />
+            </svg>
+            <span className="word">
+              logoipsum<span className="dot" />
+            </span>
+          </div>
 
-              {/* 6-Stage Workflow Cards (Slide 4) */}
-              <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(210px, 1fr))", gap: 14, marginBottom: 26 }}>
-                {[
-                  { step: "1", title: "Ingest", desc: "OSINT + Commercial Feeds[cite: 1]" },
-                  { step: "2", title: "Enrich", desc: "6 Parallel Analyzers (<5s)[cite: 1]" },
-                  { step: "3", title: "Classify", desc: "ML Ensemble (RF/XGB/NN)[cite: 1]" },
-                  { step: "4", title: "Correlate", desc: "Neo4j Graph Engine[cite: 1]" },
-                  { step: "5", title: "Detect", desc: "Auto Rule Generation (<30s)[cite: 1]" },
-                  { step: "6", title: "Deploy", desc: "SIEM / EDR / SOAR Push[cite: 1]" },
-                ].map((s) => (
-                  <div key={s.step} className="hero-kpi-card" style={{ padding: "16px 18px" }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", color: "var(--brand-cyan)", fontWeight: 800, fontSize: "0.8rem" }}>
-                      <span>STAGE {s.step}</span>
-                      <Clock size={14} />
-                    </div>
-                    <div style={{ fontWeight: 700, fontSize: "1.05rem", marginTop: 6 }}>{s.title}</div>
-                    <div style={{ fontSize: "0.78rem", color: "var(--text-muted)", marginTop: 4 }}>{s.desc}</div>
+          {/* lg3: 28.5 x 28 — circle stroke r12.35 sw 3.1 + two curved swirl paths */}
+          <div className="lg lg3">
+            <svg viewBox="0 0 28 28" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <circle cx="14" cy="14" r="12.35" stroke="currentColor" strokeWidth="3.1" />
+              <path
+                d="M5.5 17.5C9.5 11.5 15.5 10.5 22.5 14.5"
+                stroke="currentColor"
+                strokeWidth="3.1"
+                strokeLinecap="round"
+              />
+              <path
+                d="M7.5 22C12 16.8 17 16.2 21.8 19.2"
+                stroke="currentColor"
+                strokeWidth="2.8"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="word">logoipsum</span>
+          </div>
+
+          {/* lg4: 28.5 x 25.5 — filled wavy mound path + two stroked wave lines beneath */}
+          <div className="lg lg4">
+            <svg viewBox="0 0 28 25.5" fill="none" xmlns="http://www.w3.org/2000/svg" aria-hidden="true">
+              <path
+                d="M2 13.2C5.2 13.2 7.4 3.5 14 3.5C20.6 3.5 22.8 13.2 26 13.2H2Z"
+                fill="currentColor"
+              />
+              <path
+                d="M2 18.2C6.5 18.2 9.5 15.8 14 15.8C18.5 15.8 21.5 18.2 26 18.2"
+                stroke="currentColor"
+                strokeWidth="3.05"
+                strokeLinecap="round"
+              />
+              <path
+                d="M4.5 23.2C8.2 23.2 10.6 21.2 14 21.2C17.4 21.2 19.8 23.2 23.5 23.2"
+                stroke="currentColor"
+                strokeWidth="3.05"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span className="word">logoipsum</span>
+          </div>
+        </div>
+
+        {/* ThreatOps Platform Overlay Drawer for Header Links (About, Features, FAQ, Contact) */}
+        {stageDrawer && (
+          <div
+            className="stage-drawer-backdrop"
+            onClick={() => setStageDrawer(null)}
+            role="dialog"
+            aria-modal="true"
+          >
+            <div className="stage-drawer" onClick={(e) => e.stopPropagation()}>
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 20,
+                  paddingBottom: 16,
+                  borderBottom: "1px solid rgba(255,255,255,0.1)",
+                }}
+              >
+                <div style={{ display: "flex", alignItems: "center", gap: 12 }}>
+                  <div style={{ width: 20, height: 30 }}>
+                    <BrandMarkSvg idSuffix="-drawer" />
                   </div>
-                ))}
+                  <span style={{ fontSize: "1.1rem", fontWeight: 600 }}>
+                    ThreatOps ·{" "}
+                    {stageDrawer === "about"
+                      ? "Platform Overview"
+                      : stageDrawer === "features"
+                      ? "Core Capabilities"
+                      : stageDrawer === "faq"
+                      ? "Architecture FAQ"
+                      : "Enterprise Telemetry & Contact"}
+                  </span>
+                </div>
+                <button
+                  type="button"
+                  className="console-btn-ghost"
+                  style={{ padding: "6px 10px" }}
+                  onClick={() => setStageDrawer(null)}
+                  aria-label="Close modal"
+                >
+                  <X size={16} />
+                </button>
               </div>
 
-              {/* On-Demand Real-Time Indicator Scanner */}
-              <div className="threat-panel">
-                <h3 style={{ fontSize: "1.1rem", marginBottom: 12 }}>Test Indicator Through 13-Second Pipeline[cite: 1]</h3>
-                <div style={{ display: "flex", gap: 12, marginBottom: 16, flexWrap: "wrap" }}>
-                  <input
-                    type="text"
-                    className="threat-input"
-                    style={{ flex: 1, minWidth: 280 }}
-                    value={scanIoc}
-                    onChange={(e) => setScanIoc(e.target.value)}
-                    placeholder="Enter URL, Domain, or IPv4..."
-                  />
-                  <button className="btn-cyber-primary" onClick={handleScanIndicator} disabled={scanning}>
-                    <Terminal size={15} /> {scanning ? "Running 13s Pipeline..." : "Analyze Indicator"}
-                  </button>
+              {stageDrawer === "about" && (
+                <div>
+                  <h3 style={{ fontSize: "1.5rem", fontWeight: 500, marginBottom: 12 }}>
+                    Autonomous 13-Second Threat Intelligence Infrastructure
+                  </h3>
+                  <p style={{ color: "var(--muted)", lineHeight: 1.6, marginBottom: 20 }}>
+                    ThreatOps unifies live OSINT ingestion (Abuse.ch URLHaus, FeodoTracker, AlienVault OTX),
+                    6-source parallel enrichment, a 96.2% precision Voting Classifier ensemble (Random Forest,
+                    XGBoost, and Multi-Layer Perceptron) paired with an unsupervised Isolation Forest anomaly
+                    detector, and Neo4j graph correlation into a single 13-second automated pipeline.
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(3, 1fr)",
+                      gap: 12,
+                      marginBottom: 24,
+                    }}
+                  >
+                    <div className="console-kpi-card">
+                      <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Ensemble Precision</div>
+                      <div className="mono-num" style={{ fontSize: "1.6rem", fontWeight: 700, marginTop: 4 }}>
+                        96.2%
+                      </div>
+                    </div>
+                    <div className="console-kpi-card">
+                      <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>Mean Triage Latency</div>
+                      <div className="mono-num" style={{ fontSize: "1.6rem", fontWeight: 700, marginTop: 4 }}>
+                        &lt; 13s
+                      </div>
+                    </div>
+                    <div className="console-kpi-card">
+                      <div style={{ fontSize: "0.78rem", color: "var(--muted)" }}>False Positive Rate</div>
+                      <div className="mono-num" style={{ fontSize: "1.6rem", fontWeight: 700, marginTop: 4 }}>
+                        1.8%
+                      </div>
+                    </div>
+                  </div>
+                  <div style={{ display: "flex", gap: 12 }}>
+                    <button
+                      type="button"
+                      className="console-btn-pill"
+                      onClick={() => enterThreatOpsConsole("pipeline")}
+                    >
+                      Launch Live ThreatOps Console
+                    </button>
+                    <button
+                      type="button"
+                      className="console-btn-ghost"
+                      onClick={() => enterThreatOpsConsole("impact")}
+                    >
+                      View SOC ROI Benchmarks
+                    </button>
+                  </div>
                 </div>
+              )}
 
-                {scanResult && (
-                  <div style={{ background: "rgba(3, 7, 18, 0.7)", border: "1px solid var(--border-color)", borderRadius: 10, padding: 18 }}>
-                    <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 12, flexWrap: "wrap", gap: 10 }}>
-                      <div>
-                        <span style={{ fontSize: "0.75rem", color: "var(--text-muted)" }}>VERDICT</span>
-                        <div style={{ fontSize: "1.2rem", fontWeight: 800, color: scanResult.risk_score >= 70 ? "var(--status-critical)" : "var(--status-good)" }}>
-                          {scanResult.verdict} (Score: {scanResult.risk_score}/100)
+              {stageDrawer === "features" && (
+                <div>
+                  <p style={{ color: "var(--muted)", marginBottom: 18 }}>
+                    Select any ThreatOps engine below to open the live interactive workspace:
+                  </p>
+                  <div
+                    style={{
+                      display: "grid",
+                      gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
+                      gap: 12,
+                      marginBottom: 22,
+                    }}
+                  >
+                    {[
+                      {
+                        id: "pipeline",
+                        title: "01. 13-Second IOC Triage",
+                        desc: "Real-time feature extraction, live OSINT feed correlation, and explainable risk scoring.",
+                      },
+                      {
+                        id: "ensemble",
+                        title: "02. 96.2% ML Ensemble + NLP",
+                        desc: "40% Random Forest, 35% XGBoost, 25% Neural Net + MITRE ATT&CK advisory extractor.",
+                      },
+                      {
+                        id: "graph",
+                        title: "03. Neo4j Threat Graph",
+                        desc: "Interactive 2D force-directed topology linking APT campaigns, actors, and IOCs.",
+                      },
+                      {
+                        id: "rules",
+                        title: "04. Auto Rule Generator",
+                        desc: "Instant Sigma, YARA, Suricata, and Snort detection signatures in under 30 seconds.",
+                      },
+                      {
+                        id: "enrich",
+                        title: "05. 6-Source Parallel Enricher",
+                        desc: "Concurrent VirusTotal, AbuseIPDB, Shodan, and AlienVault OTX reputation telemetry.",
+                      },
+                      {
+                        id: "siem",
+                        title: "06. SIEM / SOAR / EDR Export",
+                        desc: "One-click Splunk SPL, Sentinel KQL, QRadar AQL, CrowdStrike CSV, and STIX 2.1 bundles.",
+                      },
+                    ].map((f) => (
+                      <div
+                        key={f.id}
+                        className="console-kpi-card"
+                        style={{ cursor: "pointer" }}
+                        onClick={() => enterThreatOpsConsole(f.id)}
+                      >
+                        <div style={{ fontWeight: 600, marginBottom: 6 }}>{f.title}</div>
+                        <div style={{ fontSize: "0.82rem", color: "var(--muted)", lineHeight: 1.45 }}>
+                          {f.desc}
                         </div>
-                      </div>
-                      <div style={{ display: "flex", gap: 10 }}>
-                        <span className="badge-critical">P(Malicious): {(scanResult.ml_malicious_probability * 100).toFixed(1)}%</span>
-                        {scanResult.is_anomaly && <span className="badge-critical" style={{ background: "rgba(168, 85, 247, 0.2)", color: "#c084fc", borderColor: "#a855f7" }}>ISOLATION FOREST OUTLIER</span>}
-                      </div>
-                    </div>
-
-                    <div style={{ fontSize: "0.85rem", color: "var(--text-secondary)", marginBottom: 10 }}>
-                      <strong>Explainable AI Factors:</strong> {scanResult.reasons.join(" • ")}
-                    </div>
-                  </div>
-                )}
-              </div>
-
-              {/* Active Threat Feed Table */}
-              <div className="threat-panel">
-                <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: 16, flexWrap: "wrap", gap: 12 }}>
-                  <h3 style={{ fontSize: "1.1rem" }}>Active OSINT Ingestion Feed ({iocs.length} Indicators)</h3>
-                  <button className="btn-cyber-outline" onClick={loadDashboardData}>
-                    <RefreshCw size={14} /> Refresh Ingestion
-                  </button>
-                </div>
-                <div style={{ overflowX: "auto" }}>
-                  <table className="threat-table">
-                    <thead>
-                      <tr>
-                        <th>Indicator (IOC)</th>
-                        <th>Type</th>
-                        <th>Classification</th>
-                        <th>Malware Tags</th>
-                        <th>Ensemble Prob</th>
-                        <th>Risk Score</th>
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {iocs.map((item) => (
-                        <tr key={item.id}>
-                          <td className="mono-cell" style={{ maxWidth: 360 }}>{item.ioc_value}</td>
-                          <td><span className="badge-tag">{item.ioc_type.toUpperCase()}</span></td>
-                          <td>{item.threat_type}</td>
-                          <td>{item.tags.slice(0, 3).map((t, i) => (<span key={i} className="badge-tag">{t}</span>))}</td>
-                          <td>{item.ml_malicious_prob ? `${(item.ml_malicious_prob * 100).toFixed(1)}%` : "N/A"}</td>
-                          <td><span className={item.risk_score >= 70 ? "badge-critical" : "badge-tag"}>{item.risk_score}/100</span></td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {/* TAB 2: 96.2% ML ENSEMBLE ENGINE (SLIDE 5) */}
-          {activeTab === "ensemble" && (
-            <motion.div key="ensemble" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-              <div style={{ marginBottom: 20 }}>
-                <h2 style={{ fontSize: "1.5rem", fontWeight: 800 }}>ML Classification Engine[cite: 1]</h2>
-                <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-                  Ensemble model with 96.2% precision and &lt;2% false positive rate across 150 Input Features[cite: 1]
-                </p>
-              </div>
-
-              {/* Exact Slide 5 Metrics Grid */}
-              <div className="hero-kpi-grid">
-                <div className="hero-kpi-card">
-                  <div className="kpi-title"><span>Precision</span><CheckCircle2 size={16} color="#00f2fe" /></div>
-                  <div className="kpi-metric-number" style={{ color: "#00f2fe" }}>96.2%[cite: 1]</div>
-                  <div className="kpi-subtext">Voting Classifier Verdict[cite: 1]</div>
-                </div>
-                <div className="hero-kpi-card">
-                  <div className="kpi-title"><span>Recall</span><CheckCircle2 size={16} color="#4facfe" /></div>
-                  <div className="kpi-metric-number" style={{ color: "#4facfe" }}>94.8%[cite: 1]</div>
-                  <div className="kpi-subtext">True threat capture rate[cite: 1]</div>
-                </div>
-                <div className="hero-kpi-card">
-                  <div className="kpi-title"><span>F1-Score</span><CheckCircle2 size={16} color="#8b5cf6" /></div>
-                  <div className="kpi-metric-number" style={{ color: "#8b5cf6" }}>95.5%[cite: 1]</div>
-                  <div className="kpi-subtext">Harmonic balance[cite: 1]</div>
-                </div>
-                <div className="hero-kpi-card">
-                  <div className="kpi-title"><span>False Positive Rate</span><AlertTriangle size={16} color="#10b981" /></div>
-                  <div className="kpi-metric-number" style={{ color: "#10b981" }}>&lt; 2%[cite: 1]</div>
-                  <div className="kpi-subtext">Prevents alert fatigue[cite: 1]</div>
-                </div>
-              </div>
-
-              {/* Voting Classifier Ensemble Architecture (Slide 5) */}
-              <div className="threat-panel">
-                <h3 style={{ fontSize: "1.1rem", marginBottom: 16 }}>Voting Classifier Ensemble Weights[cite: 1]</h3>
-                <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))", gap: 16 }}>
-                  <div style={{ background: "rgba(3, 7, 18, 0.7)", padding: 18, borderRadius: 10, border: "1px solid var(--border-color)" }}>
-                    <div style={{ color: "var(--brand-cyan)", fontWeight: 700, fontSize: "1.4rem" }}>40%[cite: 1]</div>
-                    <div style={{ fontWeight: 700, marginTop: 4 }}>Random Forest[cite: 1]</div>
-                    <div style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginTop: 4 }}>100 decision estimators evaluating non-linear feature splits[cite: 1]</div>
-                  </div>
-                  <div style={{ background: "rgba(3, 7, 18, 0.7)", padding: 18, borderRadius: 10, border: "1px solid var(--border-color)" }}>
-                    <div style={{ color: "#4facfe", fontWeight: 700, fontSize: "1.4rem" }}>35%[cite: 1]</div>
-                    <div style={{ fontWeight: 700, marginTop: 4 }}>XGBoost[cite: 1]</div>
-                    <div style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginTop: 4 }}>Gradient-boosted decision trees for high-precision boundary learning[cite: 1]</div>
-                  </div>
-                  <div style={{ background: "rgba(3, 7, 18, 0.7)", padding: 18, borderRadius: 10, border: "1px solid var(--border-color)" }}>
-                    <div style={{ color: "#8b5cf6", fontWeight: 700, fontSize: "1.4rem" }}>25%[cite: 1]</div>
-                    <div style={{ fontWeight: 700, marginTop: 4 }}>Neural Network[cite: 1]</div>
-                    <div style={{ color: "var(--text-muted)", fontSize: "0.8rem", marginTop: 4 }}>Multi-layer perceptron capturing latent lexical embeddings[cite: 1]</div>
-                  </div>
-                </div>
-
-                <div style={{ marginTop: 20, padding: 16, background: "rgba(139, 92, 246, 0.1)", border: "1px solid rgba(139, 92, 246, 0.3)", borderRadius: 10 }}>
-                  <strong style={{ color: "#c084fc" }}>Anomaly Detection Engine (Isolation Forest):</strong> Runs in parallel with ensemble classification to identify zero-day threats and novel attack patterns not seen in training data[cite: 1].
-                </div>
-              </div>
-            </motion.div>
-          )}
-
-          {/* TAB 3: NEO4J GRAPH CORRELATION (SLIDE 3 & 4) */}
-          {activeTab === "graph" && (
-            <motion.div key="graph" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-              <div style={{ marginBottom: 20 }}>
-                <h2 style={{ fontSize: "1.5rem", fontWeight: 800 }}>Neo4j Threat Knowledge Graph[cite: 1]</h2>
-                <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-                  Links IOCs, actors, campaigns, and infrastructure in an interactive correlation topology[cite: 1]
-                </p>
-              </div>
-
-              <div className="threat-panel" style={{ height: 620, padding: 0, overflow: "hidden", position: "relative" }}>
-                <ForceGraph2D
-                  graphData={graphData}
-                  nodeLabel="id"
-                  nodeColor={(n) => (n.group === "actor" ? "#ef4444" : n.group === "campaign" ? "#8b5cf6" : "#00f2fe")}
-                  nodeRelSize={7}
-                  linkColor={() => "rgba(255,255,255,0.2)"}
-                  backgroundColor="transparent"
-                />
-              </div>
-            </motion.div>
-          )}
-
-          {/* TAB 4: AUTO DETECTION RULE GENERATOR (SLIDE 3 & 4) */}
-          {activeTab === "rules" && (
-            <motion.div key="rules" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-              <div style={{ marginBottom: 20 }}>
-                <h2 style={{ fontSize: "1.5rem", fontWeight: 800 }}>Auto Rule Generation[cite: 1]</h2>
-                <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-                  Sigma, YARA, Suricata & Snort rules in seconds, not hours (30 sec vs 2 hours manually)[cite: 1]
-                </p>
-              </div>
-
-              <div className="threat-panel">
-                <div style={{ display: "flex", gap: 12, marginBottom: 18, flexWrap: "wrap" }}>
-                  <input
-                    type="text"
-                    className="threat-input"
-                    style={{ flex: 1, minWidth: 280 }}
-                    value={ruleIoc}
-                    onChange={(e) => setRuleIoc(e.target.value)}
-                  />
-                  <button className="btn-cyber-primary" onClick={handleGenerateRules}>
-                    Generate Detection Rules[cite: 1]
-                  </button>
-                </div>
-
-                {rules && (
-                  <div>
-                    <div style={{ display: "flex", gap: 10, borderBottom: "1px solid var(--border-color)", paddingBottom: 12, marginBottom: 16 }}>
-                      {["sigma", "yara", "suricata", "snort"].map((fmt) => (
-                        <button
-                          key={fmt}
-                          className={`nav-pill-btn ${selectedRuleFmt === fmt ? "active" : ""}`}
-                          onClick={() => setSelectedRuleFmt(fmt)}
-                        >
-                          {fmt.toUpperCase()} RULE[cite: 1]
-                        </button>
-                      ))}
-                    </div>
-                    <pre style={{ background: "#030712", padding: 20, borderRadius: 8, color: "var(--brand-cyan)", fontFamily: "JetBrains Mono", overflowX: "auto", fontSize: "0.85rem" }}>
-                      {rules[selectedRuleFmt]}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-
-          {/* TAB 5: 6-SOURCE ENRICHMENT ENGINE (SLIDE 3 & 7) */}
-          {activeTab === "enrich" && (
-            <motion.div key="enrich" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-              <div style={{ marginBottom: 20 }}>
-                <h2 style={{ fontSize: "1.5rem", fontWeight: 800 }}>6-Source Parallel Enrichment[cite: 1]</h2>
-                <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-                  VirusTotal, AbuseIPDB, Shodan, AlienVault OTX, and Cortex Analyzers queried concurrently under 5 seconds[cite: 1]
-                </p>
-              </div>
-
-              <div className="threat-panel">
-                <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
-                  <input
-                    type="text"
-                    className="threat-input"
-                    style={{ flex: 1, minWidth: 280 }}
-                    value={enrichIoc}
-                    onChange={(e) => setEnrichIoc(e.target.value)}
-                  />
-                  <button className="btn-cyber-primary" onClick={handleExecuteEnrichment} disabled={enriching}>
-                    <Zap size={15} /> {enriching ? "Enriching in <5s..." : "Execute 6-Source Enrichment"}
-                  </button>
-                </div>
-
-                {enrichment && (
-                  <div style={{ display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(240px, 1fr))", gap: 16 }}>
-                    {Object.entries(enrichment.sources).map(([src, d]) => (
-                      <div key={src} style={{ background: "rgba(3, 7, 18, 0.75)", border: "1px solid var(--border-color)", padding: 18, borderRadius: 10 }}>
-                        <div style={{ color: "var(--brand-cyan)", fontWeight: 700, marginBottom: 8 }}>{src.replace("_", " ")}[cite: 1]</div>
-                        <pre style={{ fontSize: "0.78rem", color: "var(--text-secondary)", margin: 0, overflowX: "auto" }}>
-                          {JSON.stringify(d, null, 2)}
-                        </pre>
                       </div>
                     ))}
                   </div>
-                )}
-              </div>
-            </motion.div>
-          )}
+                  <button
+                    type="button"
+                    className="console-btn-pill"
+                    onClick={() => enterThreatOpsConsole("pipeline")}
+                  >
+                    Open Full Console
+                  </button>
+                </div>
+              )}
 
-          {/* TAB 6: SIEM / SOAR / EDR ONE-CLICK EXPORT (SLIDE 3 & 7) */}
-          {activeTab === "siem" && (
-            <motion.div key="siem" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-              <div style={{ marginBottom: 20 }}>
-                <h2 style={{ fontSize: "1.5rem", fontWeight: 800 }}>SIEM / SOAR / EDR Integrations[cite: 1]</h2>
-                <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-                  Plug into your existing security stack with one-click export (No rip-and-replace)[cite: 1]
-                </p>
-              </div>
-
-              <div className="threat-panel">
-                <div style={{ display: "flex", gap: 10, marginBottom: 20, flexWrap: "wrap" }}>
-                  {[
-                    { id: "splunk", label: "Splunk (SPL)[cite: 1]" },
-                    { id: "sentinel", label: "Microsoft Sentinel (KQL)[cite: 1]" },
-                    { id: "qradar", label: "IBM QRadar (AQL)[cite: 1]" },
-                    { id: "crowdstrike", label: "CrowdStrike Falcon (CSV)[cite: 1]" },
-                    { id: "stix", label: "STIX / TAXII 2.1[cite: 1]" },
-                  ].map((p) => (
+              {stageDrawer === "faq" && (
+                <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                      How does the 96.2% ML Ensemble avoid alert fatigue?
+                    </div>
+                    <p style={{ fontSize: "0.86rem", color: "var(--muted)", lineHeight: 1.5 }}>
+                      Each indicator is decomposed into 14 structural and lexical features (Shannon entropy,
+                      digit ratio, raw IPv4 host detection, non-standard port usage, TLD abuse reputation,
+                      and payload keywords) and evaluated by a soft-voting ensemble combined with an
+                      Isolation Forest zero-day detector, reducing false positives from 40% to 1.8%.
+                    </p>
+                  </div>
+                  <div>
+                    <div style={{ fontWeight: 600, marginBottom: 4 }}>
+                      Which SIEM and EDR platforms are supported out of the box?
+                    </div>
+                    <p style={{ fontSize: "0.86rem", color: "var(--muted)", lineHeight: 1.5 }}>
+                      ThreatOps generates native queries and blocklists for Splunk (SPL), Microsoft Sentinel
+                      (KQL), IBM QRadar (AQL), CrowdStrike Falcon (CSV), and STIX/TAXII 2.1 JSON bundles, plus
+                      Sigma, YARA, Suricata, and Snort rules.
+                    </p>
+                  </div>
+                  <div style={{ marginTop: 8 }}>
                     <button
-                      key={p.id}
-                      className={`nav-pill-btn ${selectedSiem === p.id ? "active" : ""}`}
-                      onClick={() => handleExportSiem(p.id)}
+                      type="button"
+                      className="console-btn-pill"
+                      onClick={() => enterThreatOpsConsole("rules")}
                     >
-                      {p.label}
+                      Test Live Rule Generator
+                    </button>
+                  </div>
+                </div>
+              )}
+
+              {stageDrawer === "contact" && (
+                <form onSubmit={handleIngestOrgFeed}>
+                  <p style={{ color: "var(--muted)", fontSize: "0.88rem", marginBottom: 16 }}>
+                    Stream raw firewall or EDR telemetry lines directly into the ThreatOps ingestion pipeline
+                    to isolate high-risk indicators:
+                  </p>
+                  <div style={{ marginBottom: 12 }}>
+                    <label style={{ display: "block", fontSize: "0.8rem", color: "var(--muted)", marginBottom: 6 }}>
+                      Organization Identifier
+                    </label>
+                    <input
+                      type="text"
+                      className="console-input"
+                      style={{ width: "100%", borderRadius: 10 }}
+                      value={orgName}
+                      onChange={(e) => setOrgName(e.target.value)}
+                    />
+                  </div>
+                  <div style={{ marginBottom: 16 }}>
+                    <label style={{ display: "block", fontSize: "0.8rem", color: "var(--muted)", marginBottom: 6 }}>
+                      Raw Telemetry Batch
+                    </label>
+                    <textarea
+                      rows={4}
+                      className="console-input mono-num"
+                      style={{ width: "100%", borderRadius: 10 }}
+                      value={orgLogs}
+                      onChange={(e) => setOrgLogs(e.target.value)}
+                    />
+                  </div>
+                  {orgIngestStatus && (
+                    <div
+                      style={{
+                        padding: 12,
+                        borderRadius: 10,
+                        background: "rgba(255,255,255,0.05)",
+                        border: "1px solid rgba(255,255,255,0.14)",
+                        fontSize: "0.84rem",
+                        marginBottom: 16,
+                      }}
+                    >
+                      Parsed <strong>{orgIngestStatus.indicators_parsed}</strong> candidate tokens · Isolated{" "}
+                      <strong>{orgIngestStatus.critical_threats_isolated}</strong> new high-risk threats.
+                    </div>
+                  )}
+                  <div style={{ display: "flex", gap: 12 }}>
+                    <button type="submit" className="console-btn-pill">
+                      Ingest Telemetry Batch
+                    </button>
+                    <button
+                      type="button"
+                      className="console-btn-ghost"
+                      onClick={() => enterThreatOpsConsole("pipeline")}
+                    >
+                      Open Live Feed Table
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+          </div>
+        )}
+      </div>
+    );
+  }
+
+  // ════════════════════════════════════════════════════════════════════════
+  // VIEW 2: THREATOPS ENTERPRISE CONSOLE (DARK MONOCHROME VOID EDITION)
+  // ════════════════════════════════════════════════════════════════════════
+  return (
+    <div className="console-shell">
+      <header className="console-topbar">
+        <button
+          type="button"
+          className="console-brand-group"
+          onClick={() => setViewMode("stage")}
+          title="Return to Landing Stage"
+        >
+          <div style={{ width: 22, height: 34 }}>
+            <BrandMarkSvg idSuffix="-console" />
+          </div>
+          <span style={{ fontSize: "1.15rem", fontWeight: 600, letterSpacing: "-0.02em" }}>
+            ThreatOps
+          </span>
+        </button>
+
+        <nav className="console-nav" aria-label="ThreatOps Modules">
+          <button
+            type="button"
+            className={`console-tab ${activeTab === "pipeline" ? "active" : ""}`}
+            onClick={() => setActiveTab("pipeline")}
+          >
+            <Activity size={14} /> 13s Pipeline
+          </button>
+          <button
+            type="button"
+            className={`console-tab ${activeTab === "ensemble" ? "active" : ""}`}
+            onClick={() => setActiveTab("ensemble")}
+          >
+            <Cpu size={14} /> 96.2% ML Engine
+          </button>
+          <button
+            type="button"
+            className={`console-tab ${activeTab === "graph" ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab("graph");
+              handleFetchGraph();
+            }}
+          >
+            <Network size={14} /> Neo4j Graph
+          </button>
+          <button
+            type="button"
+            className={`console-tab ${activeTab === "rules" ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab("rules");
+              handleGenerateRules();
+            }}
+          >
+            <FileCode size={14} /> Detection Rules
+          </button>
+          <button
+            type="button"
+            className={`console-tab ${activeTab === "enrich" ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab("enrich");
+              handleExecuteEnrichment();
+            }}
+          >
+            <Zap size={14} /> 6-Source Enricher
+          </button>
+          <button
+            type="button"
+            className={`console-tab ${activeTab === "siem" ? "active" : ""}`}
+            onClick={() => {
+              setActiveTab("siem");
+              handleExportSiem("splunk");
+            }}
+          >
+            <Share2 size={14} /> SIEM / SOAR
+          </button>
+          <button
+            type="button"
+            className={`console-tab ${activeTab === "impact" ? "active" : ""}`}
+            onClick={() => setActiveTab("impact")}
+          >
+            <TrendingUp size={14} /> ROI & Pricing
+          </button>
+        </nav>
+
+        <button
+          type="button"
+          className="console-btn-ghost"
+          onClick={() => setViewMode("stage")}
+        >
+          <ArrowLeft size={14} /> Stage
+        </button>
+      </header>
+
+      <main className="console-main">
+        {/* TAB 1: 13-SECOND TRIAGE PIPELINE */}
+        {activeTab === "pipeline" && (
+          <div>
+            <div style={{ marginBottom: 28 }}>
+              <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
+                13-Second Autonomous Triage Pipeline
+              </h1>
+              <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
+                From raw OSINT or telemetry indicator to actionable detection in under 13 seconds · 96.2% ML
+                precision · &lt;1.8% false positives
+              </p>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(195px, 1fr))",
+                gap: 14,
+                marginBottom: 24,
+              }}
+            >
+              {[
+                { step: "01. Ingest", desc: "OSINT + Commercial Feeds" },
+                { step: "02. Enrich", desc: "6 Parallel Analyzers (<5s)" },
+                { step: "03. Classify", desc: "ML Ensemble (RF/XGB/NN)" },
+                { step: "04. Correlate", desc: "Neo4j Graph Engine" },
+                { step: "05. Detect", desc: "Auto Rule Generation (<30s)" },
+                { step: "06. Deploy", desc: "SIEM / EDR / SOAR Push" },
+              ].map((s) => (
+                <div key={s.step} className="console-kpi-card">
+                  <div style={{ fontWeight: 600, fontSize: "0.96rem" }}>{s.step}</div>
+                  <div style={{ fontSize: "0.82rem", color: "var(--muted)", marginTop: 6 }}>{s.desc}</div>
+                </div>
+              ))}
+            </div>
+
+            {/* Real-Time Indicator Scanner */}
+            <div className="console-surface">
+              <h2 style={{ fontSize: "1.15rem", fontWeight: 500, marginBottom: 14 }}>
+                Live Indicator Inspection
+              </h2>
+              <div style={{ display: "flex", gap: 12, flexWrap: "wrap", marginBottom: 16 }}>
+                <input
+                  type="text"
+                  className="console-input"
+                  style={{ flex: 1, minWidth: 280 }}
+                  value={scanIoc}
+                  onChange={(e) => setScanIoc(e.target.value)}
+                  placeholder="Enter URL, Domain, or IPv4 indicator..."
+                />
+                <button
+                  type="button"
+                  className="console-btn-pill"
+                  onClick={handleScanIndicator}
+                  disabled={scanning}
+                >
+                  <Terminal size={15} /> {scanning ? "Analyzing..." : "Analyze Indicator"}
+                </button>
+              </div>
+
+              {scanResult && (
+                <div
+                  style={{
+                    background: "#050505",
+                    border: "1px solid rgba(255,255,255,0.12)",
+                    borderRadius: 12,
+                    padding: 20,
+                  }}
+                >
+                  <div
+                    style={{
+                      display: "flex",
+                      justifyContent: "space-between",
+                      alignItems: "center",
+                      flexWrap: "wrap",
+                      gap: 12,
+                      marginBottom: 12,
+                    }}
+                  >
+                    <div>
+                      <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>VERDICT</div>
+                      <div className="mono-num" style={{ fontSize: "1.3rem", fontWeight: 700, marginTop: 2 }}>
+                        {scanResult.verdict} · {scanResult.risk_score}/100
+                      </div>
+                    </div>
+                    <div className="mono-num" style={{ color: "var(--muted)", fontSize: "0.85rem" }}>
+                      P(Malicious): {(scanResult.ml_malicious_probability * 100).toFixed(1)}%
+                      {scanResult.is_anomaly ? " · Isolation Forest Outlier" : ""}
+                    </div>
+                  </div>
+                  <div style={{ fontSize: "0.88rem", color: "var(--muted)" }}>
+                    <strong style={{ color: "var(--ink)" }}>Explainable Risk Drivers:</strong>{" "}
+                    {scanResult.reasons.join(" · ")}
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Active OSINT Threat Feed Table */}
+            <div className="console-surface">
+              <div
+                style={{
+                  display: "flex",
+                  justifyContent: "space-between",
+                  alignItems: "center",
+                  marginBottom: 18,
+                  flexWrap: "wrap",
+                  gap: 12,
+                }}
+              >
+                <div>
+                  <h2 style={{ fontSize: "1.15rem", fontWeight: 500 }}>
+                    Active OSINT Threat Feed ({iocs.length} Indicators)
+                  </h2>
+                </div>
+                <div style={{ display: "flex", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                  <input
+                    type="text"
+                    className="console-input"
+                    style={{ padding: "8px 14px", fontSize: "0.84rem" }}
+                    placeholder="Filter indicator..."
+                    value={searchQuery}
+                    onChange={(e) => {
+                      setSearchQuery(e.target.value);
+                      loadDashboardData(filterType, e.target.value);
+                    }}
+                  />
+                  {["all", "url", "ipv4", "domain"].map((t) => (
+                    <button
+                      key={t}
+                      type="button"
+                      className={`console-tab ${filterType === t ? "active" : ""}`}
+                      onClick={() => {
+                        setFilterType(t);
+                        loadDashboardData(t, searchQuery);
+                      }}
+                    >
+                      {t === "all" ? "All" : t.toUpperCase()}
                     </button>
                   ))}
+                  <button
+                    type="button"
+                    className="console-btn-ghost"
+                    onClick={handleRefreshFeeds}
+                    disabled={refreshing}
+                  >
+                    <RefreshCw size={14} /> {refreshing ? "Refreshing..." : "Refresh Feed"}
+                  </button>
                 </div>
-
-                {exportData && (
-                  <div>
-                    <h4 style={{ color: "var(--brand-cyan)", marginBottom: 10 }}>Generated Artifact for {exportData.platform}[cite: 1]</h4>
-                    <pre style={{ background: "#030712", padding: 20, borderRadius: 8, color: "#fff", fontFamily: "JetBrains Mono", fontSize: "0.85rem", overflowX: "auto" }}>
-                      {exportData.export_query || exportData.payload || JSON.stringify(exportData, null, 2)}
-                    </pre>
-                  </div>
-                )}
-              </div>
-            </motion.div>
-          )}
-
-          {/* TAB 7: QUANTIFIABLE BUSINESS IMPACT & ROI (SLIDE 6) */}
-          {activeTab === "impact" && (
-            <motion.div key="impact" initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0, y: -10 }}>
-              <div style={{ marginBottom: 20 }}>
-                <h2 style={{ fontSize: "1.5rem", fontWeight: 800 }}>Business Impact & ROI Metrics[cite: 1]</h2>
-                <p style={{ color: "var(--text-secondary)", fontSize: "0.85rem" }}>
-                  Quantifiable improvements across every key SOC metric[cite: 1]
-                </p>
               </div>
 
-              {/* Exact Slide 6 Table */}
-              <div className="threat-panel" style={{ padding: 0, overflow: "hidden", marginBottom: 24 }}>
-                <table className="threat-table">
+              <div style={{ overflowX: "auto" }}>
+                <table className="console-table">
                   <thead>
                     <tr>
-                      <th>Metric[cite: 1]</th>
-                      <th>Before ThreatOps[cite: 1]</th>
-                      <th>After ThreatOps[cite: 1]</th>
-                      <th>Improvement[cite: 1]</th>
+                      <th>Indicator (IOC)</th>
+                      <th>Type</th>
+                      <th>Classification</th>
+                      <th>Tags</th>
+                      <th>Ensemble Prob</th>
+                      <th>Risk Score</th>
                     </tr>
                   </thead>
                   <tbody>
-                    <tr>
-                      <td style={{ fontWeight: 600 }}>Time to Analyze IOC[cite: 1]</td>
-                      <td>30 min[cite: 1]</td>
-                      <td>5 sec[cite: 1]</td>
-                      <td><span className="badge-critical" style={{ background: "rgba(16, 185, 129, 0.2)", color: "#34d399", borderColor: "#10b981" }}>99.7%[cite: 1]</span></td>
-                    </tr>
-                    <tr>
-                      <td style={{ fontWeight: 600 }}>False Positive Rate[cite: 1]</td>
-                      <td>40%[cite: 1]</td>
-                      <td>1.8%[cite: 1]</td>
-                      <td><span className="badge-critical" style={{ background: "rgba(16, 185, 129, 0.2)", color: "#34d399", borderColor: "#10b981" }}>95.5%[cite: 1]</span></td>
-                    </tr>
-                    <tr>
-                      <td style={{ fontWeight: 600 }}>IOCs Processed / Analyst[cite: 1]</td>
-                      <td>100 / day[cite: 1]</td>
-                      <td>1,000+[cite: 1]</td>
-                      <td><span className="badge-critical" style={{ background: "rgba(16, 185, 129, 0.2)", color: "#34d399", borderColor: "#10b981" }}>10×[cite: 1]</span></td>
-                    </tr>
-                    <tr>
-                      <td style={{ fontWeight: 600 }}>Detection Rule Creation[cite: 1]</td>
-                      <td>2 hours[cite: 1]</td>
-                      <td>30 sec[cite: 1]</td>
-                      <td><span className="badge-critical" style={{ background: "rgba(16, 185, 129, 0.2)", color: "#34d399", borderColor: "#10b981" }}>99.6%[cite: 1]</span></td>
-                    </tr>
-                    <tr>
-                      <td style={{ fontWeight: 600 }}>Mean Time to Detect (MTTD)[cite: 1]</td>
-                      <td>24 hours[cite: 1]</td>
-                      <td>5 min[cite: 1]</td>
-                      <td><span className="badge-critical" style={{ background: "rgba(16, 185, 129, 0.2)", color: "#34d399", borderColor: "#10b981" }}>99.7%[cite: 1]</span></td>
-                    </tr>
+                    {iocs.map((item) => (
+                      <tr key={item.id}>
+                        <td className="mono-num" style={{ maxWidth: 380, wordBreak: "break-all" }}>
+                          {item.ioc_value}
+                        </td>
+                        <td style={{ color: "var(--muted)" }}>{item.ioc_type.toUpperCase()}</td>
+                        <td>{item.threat_type}</td>
+                        <td style={{ color: "var(--muted)" }}>
+                          {(item.tags || []).slice(0, 3).join(" · ") || "—"}
+                        </td>
+                        <td className="mono-num">
+                          {item.ml_malicious_prob
+                            ? `${(item.ml_malicious_prob * 100).toFixed(1)}%`
+                            : "—"}
+                        </td>
+                        <td className="mono-num" style={{ fontWeight: 600 }}>
+                          {item.risk_score}/100
+                        </td>
+                      </tr>
+                    ))}
                   </tbody>
                 </table>
               </div>
+            </div>
+          </div>
+        )}
 
-              {/* Exact Slide 6 Callout Banner */}
-              <div style={{ background: "linear-gradient(135deg, rgba(16, 185, 129, 0.15) 0%, rgba(0, 242, 254, 0.15) 100%)", border: "1px solid rgba(16, 185, 129, 0.4)", borderRadius: 12, padding: 22, display: "flex", justifyContent: "space-around", flexWrap: "wrap", gap: 16 }}>
-                <div>💰 <strong>Estimated ROI:</strong> <span style={{ color: "#34d399", fontWeight: 800 }}>600%[cite: 1]</span></div>
-                <div>💵 <strong>Net Annual Savings:</strong> <span style={{ color: "#34d399", fontWeight: 800 }}>$300K (5-analyst SOC)[cite: 1]</span></div>
-                <div>⏱ <strong>Payback Period:</strong> <span style={{ color: "#00f2fe", fontWeight: 800 }}>4-month[cite: 1]</span></div>
+        {/* TAB 2: 96.2% ML ENSEMBLE ENGINE & NLP ADVISORY EXTRACTOR */}
+        {activeTab === "ensemble" && (
+          <div>
+            <div style={{ marginBottom: 28 }}>
+              <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
+                ML Classification & Advisory NLP Engine
+              </h1>
+              <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
+                Soft-voting ensemble (Random Forest, XGBoost, Neural Network) paired with unsupervised
+                Isolation Forest and MITRE ATT&CK NLP extraction
+              </p>
+            </div>
+
+            <div className="console-kpi-grid">
+              <div className="console-kpi-card">
+                <div style={{ fontSize: "0.8rem", color: "var(--muted)" }}>Precision</div>
+                <div className="mono-num" style={{ fontSize: "2rem", fontWeight: 700, marginTop: 6 }}>
+                  96.2%
+                </div>
+                <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>
+                  Voting Classifier Verdict
+                </div>
               </div>
-            </motion.div>
-          )}
+              <div className="console-kpi-card">
+                <div style={{ fontSize: "0.8rem", color: "var(--muted)" }}>Recall</div>
+                <div className="mono-num" style={{ fontSize: "2rem", fontWeight: 700, marginTop: 6 }}>
+                  94.8%
+                </div>
+                <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>
+                  True Threat Capture Rate
+                </div>
+              </div>
+              <div className="console-kpi-card">
+                <div style={{ fontSize: "0.8rem", color: "var(--muted)" }}>F1-Score</div>
+                <div className="mono-num" style={{ fontSize: "2rem", fontWeight: 700, marginTop: 6 }}>
+                  95.5%
+                </div>
+                <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>
+                  Harmonic Balance
+                </div>
+              </div>
+              <div className="console-kpi-card">
+                <div style={{ fontSize: "0.8rem", color: "var(--muted)" }}>False Positive Rate</div>
+                <div className="mono-num" style={{ fontSize: "2rem", fontWeight: 700, marginTop: 6 }}>
+                  &lt; 2%
+                </div>
+                <div style={{ fontSize: "0.78rem", color: "var(--muted)", marginTop: 4 }}>
+                  Prevents SOC Alert Fatigue
+                </div>
+              </div>
+            </div>
 
-        </AnimatePresence>
+            <div className="console-surface">
+              <h2 style={{ fontSize: "1.15rem", fontWeight: 500, marginBottom: 16 }}>
+                Voting Classifier Ensemble Weights
+              </h2>
+              <div
+                style={{
+                  display: "grid",
+                  gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+                  gap: 16,
+                }}
+              >
+                <div className="console-kpi-card">
+                  <div className="mono-num" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+                    40% · Random Forest
+                  </div>
+                  <p style={{ color: "var(--muted)", fontSize: "0.84rem", marginTop: 8, lineHeight: 1.5 }}>
+                    100 decision estimators evaluating non-linear structural and lexical feature splits.
+                  </p>
+                </div>
+                <div className="console-kpi-card">
+                  <div className="mono-num" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+                    35% · XGBoost
+                  </div>
+                  <p style={{ color: "var(--muted)", fontSize: "0.84rem", marginTop: 8, lineHeight: 1.5 }}>
+                    Gradient-boosted decision trees tuned for high-precision decision boundary learning.
+                  </p>
+                </div>
+                <div className="console-kpi-card">
+                  <div className="mono-num" style={{ fontSize: "1.5rem", fontWeight: 700 }}>
+                    25% · Neural Network
+                  </div>
+                  <p style={{ color: "var(--muted)", fontSize: "0.84rem", marginTop: 8, lineHeight: 1.5 }}>
+                    Multi-layer perceptron (32×16) capturing latent character entropy and DGA patterns.
+                  </p>
+                </div>
+              </div>
+            </div>
+
+            {/* Unstructured Threat Advisory NLP & MITRE ATT&CK Extractor */}
+            <div className="console-surface">
+              <h2 style={{ fontSize: "1.15rem", fontWeight: 500, marginBottom: 12 }}>
+                Unstructured Threat Advisory NLP & MITRE ATT&CK Extractor
+              </h2>
+              <p style={{ color: "var(--muted)", fontSize: "0.86rem", marginBottom: 14 }}>
+                Automatically refangs defanged indicators (`hxxp`, `[.]`), maps MITRE ATT&CK tactics, and
+                scores extracted IOCs with the ML ensemble:
+              </p>
+              <textarea
+                rows={4}
+                className="console-input mono-num"
+                style={{ width: "100%", borderRadius: 12, marginBottom: 14 }}
+                value={reportText}
+                onChange={(e) => setReportText(e.target.value)}
+              />
+              <button
+                type="button"
+                className="console-btn-pill"
+                onClick={handleExtractReport}
+                disabled={extractingReport}
+              >
+                <FileText size={15} />{" "}
+                {extractingReport ? "Extracting Intelligence..." : "Extract IOCs & MITRE TTPs"}
+              </button>
+
+              {reportResult && (
+                <div style={{ marginTop: 20, display: "grid", gap: 16 }}>
+                  <div className="console-kpi-card">
+                    <div style={{ fontWeight: 600, marginBottom: 8 }}>
+                      Detected MITRE ATT&CK Techniques ({reportResult.mitre_attack_ttps.length})
+                    </div>
+                    <div style={{ display: "flex", flexWrap: "wrap", gap: 12, fontSize: "0.85rem" }}>
+                      {reportResult.mitre_attack_ttps.map((t) => (
+                        <span key={t.technique_id} style={{ color: "var(--muted)" }}>
+                          <strong style={{ color: "var(--ink)" }}>{t.technique_id}</strong> · {t.name} (
+                          {t.tactic})
+                        </span>
+                      ))}
+                    </div>
+                  </div>
+                  {reportResult.ml_scored_indicators?.length > 0 && (
+                    <div className="console-kpi-card">
+                      <div style={{ fontWeight: 600, marginBottom: 10 }}>
+                        Refanged & ML-Scored Indicators
+                      </div>
+                      <table className="console-table">
+                        <thead>
+                          <tr>
+                            <th>Extracted Indicator</th>
+                            <th>Verdict</th>
+                            <th>ML Prob</th>
+                            <th>Risk Score</th>
+                          </tr>
+                        </thead>
+                        <tbody>
+                          {reportResult.ml_scored_indicators.map((ind) => (
+                            <tr key={ind.ioc_value}>
+                              <td className="mono-num">{ind.ioc_value}</td>
+                              <td>{ind.verdict}</td>
+                              <td className="mono-num">
+                                {(ind.ml_malicious_probability * 100).toFixed(1)}%
+                              </td>
+                              <td className="mono-num">{ind.risk_score}/100</td>
+                            </tr>
+                          ))}
+                        </tbody>
+                      </table>
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 3: NEO4J THREAT KNOWLEDGE GRAPH */}
+        {activeTab === "graph" && (
+          <div>
+            <div style={{ marginBottom: 24 }}>
+              <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
+                Neo4j Threat Knowledge Graph
+              </h1>
+              <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
+                Interactive correlation topology linking threat actors, campaigns, TTPs, and active IOCs
+              </p>
+            </div>
+
+            <div
+              className="console-surface"
+              style={{ height: 600, padding: 0, overflow: "hidden", position: "relative" }}
+            >
+              <ForceGraph2D
+                graphData={graphData}
+                nodeLabel="id"
+                nodeColor={(n) =>
+                  n.group === "actor" ? "#ffffff" : n.group === "campaign" ? "#b6b5b5" : "#737373"
+                }
+                nodeRelSize={6}
+                linkColor={() => "rgba(255,255,255,0.22)"}
+                backgroundColor="#0b0b0b"
+              />
+            </div>
+          </div>
+        )}
+
+        {/* TAB 4: AUTOMATED DETECTION RULE GENERATOR */}
+        {activeTab === "rules" && (
+          <div>
+            <div style={{ marginBottom: 24 }}>
+              <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
+                Automated Detection Rule Generation
+              </h1>
+              <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
+                Compile Sigma, YARA, Suricata, and Snort signatures in seconds
+              </p>
+            </div>
+
+            <div className="console-surface">
+              <div style={{ display: "flex", gap: 12, marginBottom: 20, flexWrap: "wrap" }}>
+                <input
+                  type="text"
+                  className="console-input"
+                  style={{ flex: 1, minWidth: 280 }}
+                  value={ruleIoc}
+                  onChange={(e) => setRuleIoc(e.target.value)}
+                />
+                <button type="button" className="console-btn-pill" onClick={handleGenerateRules}>
+                  Generate Detection Rules
+                </button>
+              </div>
+
+              {rules && (
+                <div>
+                  <div
+                    style={{
+                      display: "flex",
+                      gap: 8,
+                      borderBottom: "1px solid rgba(255,255,255,0.1)",
+                      paddingBottom: 14,
+                      marginBottom: 16,
+                      flexWrap: "wrap",
+                    }}
+                  >
+                    {["sigma", "yara", "suricata", "snort"].map((fmt) => (
+                      <button
+                        key={fmt}
+                        type="button"
+                        className={`console-tab ${selectedRuleFmt === fmt ? "active" : ""}`}
+                        onClick={() => setSelectedRuleFmt(fmt)}
+                      >
+                        {fmt.toUpperCase()}
+                      </button>
+                    ))}
+                  </div>
+                  <pre
+                    className="mono-num"
+                    style={{
+                      background: "#050505",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      padding: 20,
+                      borderRadius: 12,
+                      color: "var(--ink)",
+                      overflowX: "auto",
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    {rules[selectedRuleFmt]}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 5: 6-SOURCE PARALLEL ENRICHER */}
+        {activeTab === "enrich" && (
+          <div>
+            <div style={{ marginBottom: 24 }}>
+              <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
+                6-Source Parallel Enrichment
+              </h1>
+              <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
+                VirusTotal, AbuseIPDB, Shodan, and AlienVault OTX queried concurrently in under 5 seconds
+              </p>
+            </div>
+
+            <div className="console-surface">
+              <div style={{ display: "flex", gap: 12, marginBottom: 22, flexWrap: "wrap" }}>
+                <input
+                  type="text"
+                  className="console-input"
+                  style={{ flex: 1, minWidth: 280 }}
+                  value={enrichIoc}
+                  onChange={(e) => setEnrichIoc(e.target.value)}
+                />
+                <button
+                  type="button"
+                  className="console-btn-pill"
+                  onClick={handleExecuteEnrichment}
+                  disabled={enriching}
+                >
+                  <Zap size={15} /> {enriching ? "Enriching..." : "Execute Parallel Enrichment"}
+                </button>
+              </div>
+
+              {enrichment && (
+                <div
+                  style={{
+                    display: "grid",
+                    gridTemplateColumns: "repeat(auto-fit, minmax(250px, 1fr))",
+                    gap: 16,
+                  }}
+                >
+                  {Object.entries(enrichment.sources).map(([src, d]) => (
+                    <div key={src} className="console-kpi-card">
+                      <div style={{ fontWeight: 600, marginBottom: 10 }}>{src.replace("_", " ")}</div>
+                      <pre
+                        className="mono-num"
+                        style={{
+                          fontSize: "0.78rem",
+                          color: "var(--muted)",
+                          margin: 0,
+                          overflowX: "auto",
+                          lineHeight: 1.5,
+                        }}
+                      >
+                        {JSON.stringify(d, null, 2)}
+                      </pre>
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 6: SIEM / SOAR / EDR EXPORT */}
+        {activeTab === "siem" && (
+          <div>
+            <div style={{ marginBottom: 24 }}>
+              <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
+                SIEM / SOAR / EDR Integrations
+              </h1>
+              <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
+                One-click export into your existing security stack without rip-and-replace
+              </p>
+            </div>
+
+            <div className="console-surface">
+              <div style={{ display: "flex", gap: 8, marginBottom: 20, flexWrap: "wrap" }}>
+                {[
+                  { id: "splunk", label: "Splunk (SPL)" },
+                  { id: "sentinel", label: "Microsoft Sentinel (KQL)" },
+                  { id: "qradar", label: "IBM QRadar (AQL)" },
+                  { id: "crowdstrike", label: "CrowdStrike Falcon (CSV)" },
+                  { id: "stix", label: "STIX / TAXII 2.1" },
+                ].map((p) => (
+                  <button
+                    key={p.id}
+                    type="button"
+                    className={`console-tab ${selectedSiem === p.id ? "active" : ""}`}
+                    onClick={() => handleExportSiem(p.id)}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+
+              {exportData && (
+                <div>
+                  <div style={{ fontSize: "0.85rem", color: "var(--muted)", marginBottom: 10 }}>
+                    Generated Artifact for <strong style={{ color: "var(--ink)" }}>{exportData.platform}</strong>
+                  </div>
+                  <pre
+                    className="mono-num"
+                    style={{
+                      background: "#050505",
+                      border: "1px solid rgba(255,255,255,0.1)",
+                      padding: 20,
+                      borderRadius: 12,
+                      color: "var(--ink)",
+                      overflowX: "auto",
+                      lineHeight: 1.55,
+                    }}
+                  >
+                    {typeof exportData.export_query === "string"
+                      ? exportData.export_query
+                      : typeof exportData.payload === "string"
+                      ? exportData.payload
+                      : JSON.stringify(exportData.payload || exportData, null, 2)}
+                  </pre>
+                </div>
+              )}
+            </div>
+          </div>
+        )}
+
+        {/* TAB 7: QUANTIFIABLE BUSINESS IMPACT & ENTERPRISE TIERS */}
+        {activeTab === "impact" && (
+          <div>
+            <div style={{ marginBottom: 24 }}>
+              <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
+                Business Impact & Enterprise Tiers
+              </h1>
+              <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
+                Quantifiable improvements across every core SOC metric · 600% estimated ROI · 4-month payback
+              </p>
+            </div>
+
+            <div className="console-surface" style={{ padding: 0, overflow: "hidden" }}>
+              <table className="console-table">
+                <thead>
+                  <tr>
+                    <th>SOC Metric</th>
+                    <th>Before ThreatOps</th>
+                    <th>After ThreatOps</th>
+                    <th>Measured Improvement</th>
+                  </tr>
+                </thead>
+                <tbody>
+                  <tr>
+                    <td style={{ fontWeight: 500 }}>Time to Analyze IOC</td>
+                    <td className="mono-num">30 min</td>
+                    <td className="mono-num">5 sec</td>
+                    <td className="mono-num" style={{ fontWeight: 700 }}>
+                      99.7%
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{ fontWeight: 500 }}>False Positive Rate</td>
+                    <td className="mono-num">40%</td>
+                    <td className="mono-num">1.8%</td>
+                    <td className="mono-num" style={{ fontWeight: 700 }}>
+                      95.5%
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{ fontWeight: 500 }}>IOCs Processed / Analyst</td>
+                    <td className="mono-num">100 / day</td>
+                    <td className="mono-num">1,000+ / day</td>
+                    <td className="mono-num" style={{ fontWeight: 700 }}>
+                      10×
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{ fontWeight: 500 }}>Detection Rule Creation</td>
+                    <td className="mono-num">2 hours</td>
+                    <td className="mono-num">30 sec</td>
+                    <td className="mono-num" style={{ fontWeight: 700 }}>
+                      99.6%
+                    </td>
+                  </tr>
+                  <tr>
+                    <td style={{ fontWeight: 500 }}>Mean Time to Detect (MTTD)</td>
+                    <td className="mono-num">24 hours</td>
+                    <td className="mono-num">5 min</td>
+                    <td className="mono-num" style={{ fontWeight: 700 }}>
+                      99.7%
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <div
+              style={{
+                display: "grid",
+                gridTemplateColumns: "repeat(auto-fit, minmax(280px, 1fr))",
+                gap: 16,
+              }}
+            >
+              {[
+                {
+                  name: "Starter",
+                  price: "$2,499",
+                  specs: ["1,000 IOCs / day", "5 analyst seats", "Email support", "Full feature access"],
+                },
+                {
+                  name: "Professional",
+                  price: "$5,999",
+                  specs: ["10,000 IOCs / day", "20 analyst seats", "24/7 priority support", "SIEM / EDR webhooks"],
+                },
+                {
+                  name: "Enterprise",
+                  price: "$14,999",
+                  specs: ["Unlimited IOCs", "Unlimited seats", "Dedicated CSM", "Custom feed integrations"],
+                },
+              ].map((tier) => (
+                <div key={tier.name} className="console-surface" style={{ marginBottom: 0 }}>
+                  <div style={{ fontSize: "1.1rem", fontWeight: 500 }}>{tier.name}</div>
+                  <div className="mono-num" style={{ fontSize: "2.1rem", fontWeight: 700, margin: "12px 0" }}>
+                    {tier.price}
+                    <span style={{ fontSize: "0.85rem", color: "var(--muted)", fontWeight: 400 }}>/mo</span>
+                  </div>
+                  <ul
+                    style={{
+                      listStyle: "none",
+                      padding: 0,
+                      margin: "0 0 22px",
+                      display: "flex",
+                      flexDirection: "column",
+                      gap: 8,
+                      color: "var(--muted)",
+                      fontSize: "0.86rem",
+                    }}
+                  >
+                    {tier.specs.map((s) => (
+                      <li key={s}>{s}</li>
+                    ))}
+                  </ul>
+                  <button
+                    type="button"
+                    className="console-btn-pill"
+                    style={{ width: "100%", justifyContent: "center" }}
+                    onClick={() => setActiveTab("pipeline")}
+                  >
+                    Active Plan · Launch Pipeline
+                  </button>
+                </div>
+              ))}
+            </div>
+          </div>
+        )}
       </main>
     </div>
   );
