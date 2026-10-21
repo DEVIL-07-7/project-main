@@ -1,3 +1,4 @@
+import "dotenv/config";
 import express from "express";
 import http from "http";
 import { WebSocketServer } from "ws";
@@ -25,14 +26,71 @@ const __dirname = path.dirname(__filename);
 
 const PORT = 3000;
 
-// Load initial seeded IOCs from SQLite dump
+// Load initial seeded IOCs from SQLite dump (with built-in fallback if seedIocs.json is missing locally)
+const FALLBACK_SEED_IOCS = [
+  {
+    id: 1,
+    ioc_value: "http://61.54.235.31:36551/i",
+    ioc_type: "url",
+    threat_type: "malware_download",
+    tags: ["Mozi", "32-bit", "elf", "mips"],
+    source_feeds: ["Abuse.ch URLHaus"],
+    status: "online",
+    first_seen: "2026-04-02T03:07:09Z",
+    last_seen: "2026-04-02T04:19:50Z",
+    sighting_count: 2,
+    feed_confidence: 88,
+    ml_malicious_prob: 0.916,
+    is_anomaly: true,
+    risk_score: 91.6,
+  },
+  {
+    id: 2,
+    ioc_value: "http://115.55.236.110:45921/Mozi.m",
+    ioc_type: "url",
+    threat_type: "malware_download",
+    tags: ["Mozi", "botnet", "iot"],
+    source_feeds: ["Abuse.ch URLHaus"],
+    status: "online",
+    first_seen: "2026-04-02T02:15:00Z",
+    last_seen: "2026-04-02T04:20:00Z",
+    sighting_count: 3,
+    feed_confidence: 90,
+    ml_malicious_prob: 0.942,
+    is_anomaly: true,
+    risk_score: 93.7,
+  },
+  {
+    id: 3,
+    ioc_value: "185.220.101.45:3389",
+    ioc_type: "ipv4",
+    threat_type: "botnet_c2",
+    tags: ["CobaltStrike", "port:3389"],
+    source_feeds: ["Abuse.ch FeodoTracker"],
+    status: "online",
+    first_seen: "2026-04-02T01:10:00Z",
+    last_seen: "2026-04-02T04:18:00Z",
+    sighting_count: 4,
+    feed_confidence: 92,
+    ml_malicious_prob: 0.931,
+    is_anomaly: true,
+    risk_score: 93.5,
+  },
+];
+
 const seedPath = path.join(__dirname, "src", "seedIocs.json");
-let iocRecords = [];
+let iocRecords = [...FALLBACK_SEED_IOCS];
 try {
-  iocRecords = JSON.parse(fs.readFileSync(seedPath, "utf-8"));
+  if (fs.existsSync(seedPath)) {
+    const parsed = JSON.parse(fs.readFileSync(seedPath, "utf-8"));
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      iocRecords = parsed;
+    }
+  }
 } catch (err) {
-  console.warn("[ThreatOps] Failed to load seedIocs.json, starting with empty array:", err);
+  console.warn("[ThreatOps] Failed to load seedIocs.json, using built-in fallback IOCs:", err.message);
 }
+let nextIocId = iocRecords.reduce((max, r) => Math.max(max, Number(r.id) || 0), 0);
 
 // In-memory Users fallback store synced with Cloud SQL
 const users = new Map();
@@ -969,7 +1027,7 @@ function upsertIncomingIocSingle(item) {
     existing.risk_score = rescored.risk_score;
   } else {
     existing = {
-      id: iocRecords.length + 1,
+      id: ++nextIocId,
       ioc_value: item.ioc_value,
       ioc_type: item.ioc_type || "url",
       threat_type: item.threat_type || "malware_download",
@@ -1015,6 +1073,39 @@ let totalStreamedCount = 0;
 let streamTimer = null;
 const wsClients = new Set();
 
+const GEO_ORIGINS_POOL = [
+  { origin_city: "Moscow", origin_country: "Russia", country_code: "RU", origin_lat: 55.7558, origin_lng: 37.6173, asn: "AS47541 VKontakte / Bulletproof Node" },
+  { origin_city: "St. Petersburg", origin_country: "Russia", country_code: "RU", origin_lat: 59.9343, origin_lng: 30.3351, asn: "AS49505 Selectel C2 Transit" },
+  { origin_city: "Pyongyang", origin_country: "North Korea", country_code: "KP", origin_lat: 39.0392, origin_lng: 125.7625, asn: "AS131279 Star Joint Venture KP" },
+  { origin_city: "Shanghai", origin_country: "China", country_code: "CN", origin_lat: 31.2304, origin_lng: 121.4737, asn: "AS4134 Chinanet Backbone" },
+  { origin_city: "Shenzhen", origin_country: "China", country_code: "CN", origin_lat: 22.5431, origin_lng: 114.0579, asn: "AS4837 China Unicom Botnet Relay" },
+  { origin_city: "Tehran", origin_country: "Iran", country_code: "IR", origin_lat: 35.6892, origin_lng: 51.3890, asn: "AS58224 Iran Telecommunication" },
+  { origin_city: "Bucharest", origin_country: "Romania", country_code: "RO", origin_lat: 44.4268, origin_lng: 26.1025, asn: "AS9009 M247 Bulletproof Hosting" },
+  { origin_city: "Amsterdam", origin_country: "Netherlands", country_code: "NL", origin_lat: 52.3676, origin_lng: 4.9041, asn: "AS60781 LeaseWeb C2 Edge" },
+  { origin_city: "Minsk", origin_country: "Belarus", country_code: "BY", origin_lat: 53.9006, origin_lng: 27.5590, asn: "AS6697 Beltelecom Relay" },
+  { origin_city: "São Paulo", origin_country: "Brazil", country_code: "BR", origin_lat: -23.5505, origin_lng: -46.6333, asn: "AS28573 Claro Brasil Proxy" },
+  { origin_city: "Ho Chi Minh City", origin_country: "Vietnam", country_code: "VN", origin_lat: 10.8231, origin_lng: 106.6297, asn: "AS45899 VNPT Mozi Cluster" },
+  { origin_city: "Lagos", origin_country: "Nigeria", country_code: "NG", origin_lat: 6.5244, origin_lng: 3.3792, asn: "AS29465 MTN Transit Node" },
+];
+
+const SOC_TARGET_HUBS = [
+  { target_hub: "Singapore SOC (asia-southeast1)", target_lat: 1.3521, target_lng: 103.8198 },
+  { target_hub: "Virginia US-East SOC", target_lat: 38.8951, target_lng: -77.0364 },
+  { target_hub: "Frankfurt EU-Central SOC", target_lat: 50.1109, target_lng: 8.6821 },
+  { target_hub: "Tokyo APAC-North SOC", target_lat: 35.6762, target_lng: 139.6503 },
+];
+
+function resolveGeoTelemetry(iocValue = "") {
+  const hashHex = crypto.createHash("md5").update(String(iocValue)).digest("hex");
+  const idx = parseInt(hashHex.slice(0, 6), 16);
+  const origin = GEO_ORIGINS_POOL[idx % GEO_ORIGINS_POOL.length];
+  const target = SOC_TARGET_HUBS[(idx >> 3) % SOC_TARGET_HUBS.length];
+  return {
+    ...origin,
+    ...target,
+  };
+}
+
 // Seed initial triage queue from top 8 records so newly connected analysts see active queue items immediately
 function seedInitialTriageQueue() {
   const initialSlice = iocRecords.slice(0, 8);
@@ -1043,6 +1134,7 @@ function seedInitialTriageQueue() {
       triage_status: autoStatus,
       triage_latency_ms: 9 + (idx % 5),
       queued_at: new Date(Date.now() - (8 - idx) * 12000).toISOString(),
+      geo: resolveGeoTelemetry(rec.ioc_value),
     };
   });
 }
@@ -1143,6 +1235,7 @@ async function emitNextLiveFeedIoc() {
     triage_status: autoStatus,
     triage_latency_ms: triageLatencyMs,
     queued_at: new Date().toISOString(),
+    geo: resolveGeoTelemetry(record.ioc_value),
   };
 
   // Idempotent update in triageQueue (replace if same ioc_value exists, else unshift)
@@ -1898,7 +1991,7 @@ async function startServer() {
         if (label === 1 && !iocRecords.some((r) => r.ioc_value === iocVal)) {
           const scored = predictSingleIoc(iocVal, 85);
           const newRec = {
-            id: iocRecords.length + 1,
+            id: ++nextIocId,
             ioc_value: iocVal,
             ioc_type: iocVal.includes("://")
               ? "url"

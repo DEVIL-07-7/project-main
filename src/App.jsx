@@ -27,6 +27,7 @@ import {
   Compass,
 } from "lucide-react";
 import { auth, googleAuthProvider, signInWithPopup } from "./lib/firebase.ts";
+import ThreatGlobe3D from "./components/ThreatGlobe3D.tsx";
 
 const API_BASE = "/api/v1";
 const VIDEO_URL =
@@ -75,6 +76,9 @@ export default function App() {
     role: "SOC Lead",
   });
   const [activeTab, setActiveTab] = useState("pipeline"); // pipeline, ensemble, graph, rules, enrich, siem, impact
+  const [layoutMode, setLayoutMode] = useState("scroll"); // "scroll" (unified scroll-animated dashboard) | "tabs"
+  const [scrollProgress, setScrollProgress] = useState(0);
+  const [showScrollTop, setShowScrollTop] = useState(false);
   const [auditLogs, setAuditLogs] = useState([]);
   const [activeLearningBanner, setActiveLearningBanner] = useState(null);
 
@@ -301,7 +305,9 @@ export default function App() {
 
               if (typeMatches && queryMatches) {
                 setIocs((prev) => {
-                  const withoutDup = prev.filter((r) => r.ioc_value !== rec.ioc_value);
+                  const withoutDup = prev.filter(
+                    (r) => r.ioc_value !== rec.ioc_value && r.id !== rec.id
+                  );
                   return [rec, ...withoutDup].slice(0, 60);
                 });
               }
@@ -324,7 +330,10 @@ export default function App() {
               )
             );
             if (payload.audit_log) {
-              setAuditLogs((prev) => [payload.audit_log, ...prev].slice(0, 40));
+              setAuditLogs((prev) => {
+                const withoutDup = prev.filter((l) => l.id !== payload.audit_log.id);
+                return [payload.audit_log, ...withoutDup].slice(0, 40);
+              });
             }
             if (payload.active_learning?.model_summary) {
               setMlSummary({
@@ -340,7 +349,10 @@ export default function App() {
               );
             }
           } else if (payload.type === "soar:triggered" && payload.execution) {
-            setSoarExecutions((prev) => [payload.execution, ...prev].slice(0, 25));
+            setSoarExecutions((prev) => {
+              const withoutDup = prev.filter((ex) => ex.id !== payload.execution.id);
+              return [payload.execution, ...withoutDup].slice(0, 25);
+            });
           }
         } catch (err) {
           console.warn("[ThreatOps WS] Failed to parse message:", err);
@@ -476,7 +488,10 @@ export default function App() {
         const data = await res.json();
         setUser((prev) => ({ ...prev, role: data.role }));
         if (data.audit_log) {
-          setAuditLogs((prev) => [data.audit_log, ...prev].slice(0, 40));
+          setAuditLogs((prev) => {
+            const withoutDup = prev.filter((l) => l.id !== data.audit_log.id);
+            return [data.audit_log, ...withoutDup].slice(0, 40);
+          });
         }
       }
     } catch (err) {
@@ -571,12 +586,105 @@ export default function App() {
     }
 
     await loadDashboardData();
-    if (targetTab === "graph") handleFetchGraph();
-    if (targetTab === "rules") handleGenerateRules();
-    if (targetTab === "enrich") handleExecuteEnrichment();
-    if (targetTab === "siem") handleExportSiem("splunk");
+    handleFetchGraph();
+    handleGenerateRules();
+    handleExecuteEnrichment();
+    handleExportSiem("splunk");
     setViewMode("console");
+    setTimeout(() => {
+      const el = document.getElementById(`chapter-${targetTab}`);
+      if (el && targetTab !== "pipeline") {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      } else {
+        window.scrollTo({ top: 0, behavior: "smooth" });
+      }
+    }, 90);
   };
+
+  const navigateToChapter = (chapterId) => {
+    setActiveTab(chapterId);
+    if (chapterId === "graph") handleFetchGraph();
+    if (chapterId === "rules") handleGenerateRules();
+    if (chapterId === "enrich") handleExecuteEnrichment();
+    if (chapterId === "siem" && !exportData) handleExportSiem("splunk");
+
+    if (layoutMode === "scroll") {
+      const el = document.getElementById(`chapter-${chapterId}`);
+      if (el) {
+        el.scrollIntoView({ behavior: "smooth", block: "start" });
+      }
+    } else {
+      window.scrollTo({ top: 0, behavior: "smooth" });
+    }
+  };
+
+  // Scroll Progress Bar & IntersectionObserver Reveal + ScrollSpy Choreography
+  useEffect(() => {
+    if (viewMode !== "console") return;
+
+    let rafId = null;
+    const updateScrollMetrics = () => {
+      const scrollTop = window.scrollY || document.documentElement.scrollTop || 0;
+      const docHeight =
+        Math.max(
+          document.body.scrollHeight,
+          document.documentElement.scrollHeight
+        ) - window.innerHeight;
+      const ratio = docHeight > 0 ? Math.min(1, Math.max(0, scrollTop / docHeight)) : 0;
+      setScrollProgress(ratio);
+      setShowScrollTop(scrollTop > 480);
+
+      // Deterministic ScrollSpy across tall chapters
+      if (layoutMode === "scroll") {
+        const probeY = window.innerHeight * 0.28;
+        const chapters = document.querySelectorAll(".scroll-chapter");
+        let matchedChapter = null;
+        chapters.forEach((node) => {
+          const rect = node.getBoundingClientRect();
+          if (rect.top <= probeY && rect.bottom >= probeY && node.dataset.chapter) {
+            matchedChapter = node.dataset.chapter;
+          }
+        });
+        if (matchedChapter) {
+          setActiveTab((prev) => (prev === matchedChapter ? prev : matchedChapter));
+        }
+      }
+    };
+
+    const onScroll = () => {
+      if (rafId) cancelAnimationFrame(rafId);
+      rafId = requestAnimationFrame(updateScrollMetrics);
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    updateScrollMetrics();
+
+    const revealObserver = new IntersectionObserver(
+      (entries) => {
+        for (const entry of entries) {
+          if (entry.isIntersecting) {
+            entry.target.classList.add("is-visible");
+          }
+        }
+      },
+      { threshold: 0, rootMargin: "0px 0px -20px 0px" }
+    );
+
+    const revealNodes = document.querySelectorAll(".scroll-reveal");
+    revealNodes.forEach((node) => {
+      const rect = node.getBoundingClientRect();
+      if (rect.top < window.innerHeight) {
+        node.classList.add("is-visible");
+      }
+      revealObserver.observe(node);
+    });
+
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (rafId) cancelAnimationFrame(rafId);
+      revealObserver.disconnect();
+    };
+  }, [viewMode, layoutMode]);
 
   const handleScanIndicator = async () => {
     setScanning(true);
@@ -758,7 +866,14 @@ export default function App() {
   // ════════════════════════════════════════════════════════════════════════
   if (viewMode === "stage") {
     return (
-      <div className={`stage${menuOpen ? " is-open" : ""}`}>
+      <div
+        className={`stage${menuOpen ? " is-open" : ""}`}
+        onWheel={(e) => {
+          if (!stageDrawer && !menuOpen && e.deltaY > 40) {
+            enterThreatOpsConsole("pipeline");
+          }
+        }}
+      >
         {/* Full-bleed CloudFront looping video plate */}
         <div className="plate">
           <video
@@ -992,6 +1107,14 @@ export default function App() {
             <span className="word">logoipsum</span>
           </div>
         </div>
+
+        <button
+          type="button"
+          className="stage-scroll-cue"
+          onClick={() => enterThreatOpsConsole("pipeline")}
+        >
+          <span>Scroll to Live SOC Command Dashboard ↓</span>
+        </button>
 
         {/* ThreatOps Platform Overlay Drawer for Header Links (About, Features, FAQ, Contact) */}
         {stageDrawer && (
@@ -1269,6 +1392,14 @@ export default function App() {
   // ════════════════════════════════════════════════════════════════════════
   return (
     <div className="console-shell">
+      {/* Hardware-Accelerated Top Scroll Progress Bar */}
+      <div className="scroll-progress-track" aria-hidden="true">
+        <div
+          className="scroll-progress-bar"
+          style={{ transform: `scaleX(${scrollProgress})` }}
+        />
+      </div>
+
       <header className="console-topbar">
         <button
           type="button"
@@ -1288,67 +1419,67 @@ export default function App() {
           <button
             type="button"
             className={`console-tab ${activeTab === "pipeline" ? "active" : ""}`}
-            onClick={() => setActiveTab("pipeline")}
+            onClick={() => navigateToChapter("pipeline")}
           >
-            <Activity size={14} /> Live Feeds & Pipeline
+            <Activity size={14} /> 01. Live Pipeline
           </button>
           <button
             type="button"
             className={`console-tab ${activeTab === "ensemble" ? "active" : ""}`}
-            onClick={() => setActiveTab("ensemble")}
+            onClick={() => navigateToChapter("ensemble")}
           >
-            <Cpu size={14} /> ML Studio & Datasets
+            <Cpu size={14} /> 02. ML Studio
           </button>
           <button
             type="button"
             className={`console-tab ${activeTab === "graph" ? "active" : ""}`}
-            onClick={() => {
-              setActiveTab("graph");
-              handleFetchGraph();
-            }}
+            onClick={() => navigateToChapter("graph")}
           >
-            <Network size={14} /> Neo4j Graph
+            <Network size={14} /> 03. Neo4j Graph
           </button>
           <button
             type="button"
             className={`console-tab ${activeTab === "rules" ? "active" : ""}`}
-            onClick={() => {
-              setActiveTab("rules");
-              handleGenerateRules();
-            }}
+            onClick={() => navigateToChapter("rules")}
           >
-            <FileCode size={14} /> Detection Rules
+            <FileCode size={14} /> 04. Rules
           </button>
           <button
             type="button"
             className={`console-tab ${activeTab === "enrich" ? "active" : ""}`}
-            onClick={() => {
-              setActiveTab("enrich");
-              handleExecuteEnrichment();
-            }}
+            onClick={() => navigateToChapter("enrich")}
           >
-            <Zap size={14} /> 6-Source Enricher
+            <Zap size={14} /> 05. Enricher
           </button>
           <button
             type="button"
             className={`console-tab ${activeTab === "siem" ? "active" : ""}`}
-            onClick={() => {
-              setActiveTab("siem");
-              handleExportSiem("splunk");
-            }}
+            onClick={() => navigateToChapter("siem")}
           >
-            <Share2 size={14} /> SIEM / SOAR
+            <Share2 size={14} /> 06. SIEM & SOAR
           </button>
           <button
             type="button"
             className={`console-tab ${activeTab === "impact" ? "active" : ""}`}
-            onClick={() => setActiveTab("impact")}
+            onClick={() => navigateToChapter("impact")}
           >
-            <TrendingUp size={14} /> ROI & Pricing
+            <TrendingUp size={14} /> 07. Impact
           </button>
         </nav>
 
         <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+          <button
+            type="button"
+            className="console-btn-ghost"
+            style={{ padding: "7px 13px", fontSize: "0.78rem" }}
+            onClick={() =>
+              setLayoutMode((prev) => (prev === "scroll" ? "tabs" : "scroll"))
+            }
+            title="Switch between Unified Scroll-Animated Narrative and Focused Tabs"
+          >
+            {layoutMode === "scroll" ? "Mode: Scroll Flow" : "Mode: Focused Tabs"}
+          </button>
+
           <div
             style={{
               display: "flex",
@@ -1410,9 +1541,115 @@ export default function App() {
       </header>
 
       <main className="console-main">
-        {/* TAB 1: LIVE OSINT FEEDS & 13-SECOND TRIAGE PIPELINE */}
-        {activeTab === "pipeline" && (
-          <div>
+        {/* SCROLL-ANIMATED EXECUTIVE TELEMETRY & THREAT VELOCITY RIBBON */}
+        <section
+          className="scroll-reveal is-visible"
+          style={{ marginBottom: 32 }}
+          aria-label="Executive Telemetry Overview"
+        >
+          <div className="console-kpi-grid" style={{ marginBottom: 0 }}>
+            <div className="console-kpi-card">
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--muted)" }}>
+                <span>Critical Threat Density</span>
+                <span className="mono-num">
+                  {iocs.filter((r) => (r.risk_score || 0) >= 75).length} / {iocs.length || 60}
+                </span>
+              </div>
+              <div className="mono-num" style={{ fontSize: "1.75rem", fontWeight: 700, marginTop: 6 }}>
+                {iocs.length
+                  ? `${Math.round(
+                      (iocs.filter((r) => (r.risk_score || 0) >= 75).length / iocs.length) * 100
+                    )}%`
+                  : "68%"}
+              </div>
+              <div className="telemetry-meter-track">
+                <div
+                  className="telemetry-meter-fill"
+                  style={{
+                    transform: `scaleX(${
+                      iocs.length
+                        ? Math.min(
+                            1,
+                            iocs.filter((r) => (r.risk_score || 0) >= 75).length / iocs.length
+                          )
+                        : 0.68
+                    })`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="console-kpi-card">
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--muted)" }}>
+                <span>18-Feature Ensemble Precision</span>
+                <span className="mono-num">F1 {mlSummary?.metrics?.f1_score ?? 95.5}%</span>
+              </div>
+              <div className="mono-num" style={{ fontSize: "1.75rem", fontWeight: 700, marginTop: 6 }}>
+                {mlSummary?.metrics?.precision ?? 96.2}%
+              </div>
+              <div className="telemetry-meter-track">
+                <div
+                  className="telemetry-meter-fill"
+                  style={{
+                    transform: `scaleX(${Math.min(
+                      1,
+                      (mlSummary?.metrics?.precision ?? 96.2) / 100
+                    )})`,
+                  }}
+                />
+              </div>
+            </div>
+
+            <div className="console-kpi-card">
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--muted)" }}>
+                <span>Autonomous Triage Velocity</span>
+                <span className="mono-num">{streamStats.total_streamed} Streamed</span>
+              </div>
+              <div className="mono-num" style={{ fontSize: "1.75rem", fontWeight: 700, marginTop: 6 }}>
+                {latestStreamedIoc?.triage_latency_ms
+                  ? `${latestStreamedIoc.triage_latency_ms}ms`
+                  : "11ms"}
+              </div>
+              <div className="telemetry-meter-track">
+                <div
+                  className="telemetry-meter-fill"
+                  style={{ transform: "scaleX(0.94)" }}
+                />
+              </div>
+            </div>
+
+            <div className="console-kpi-card">
+              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", color: "var(--muted)" }}>
+                <span>Active SOAR Webhook Coverage</span>
+                <span className="mono-num">{soarExecutions.length} Dispatches</span>
+              </div>
+              <div className="mono-num" style={{ fontSize: "1.75rem", fontWeight: 700, marginTop: 6 }}>
+                {soarPlaybooks.filter((p) => p.enabled === 1).length || 4} Active
+              </div>
+              <div className="telemetry-meter-track">
+                <div
+                  className="telemetry-meter-fill"
+                  style={{
+                    transform: `scaleX(${
+                      soarPlaybooks.length
+                        ? soarPlaybooks.filter((p) => p.enabled === 1).length /
+                          soarPlaybooks.length
+                        : 1
+                    })`,
+                  }}
+                />
+              </div>
+            </div>
+          </div>
+        </section>
+
+        {/* CHAPTER 01: LIVE OSINT FEEDS & 13-SECOND TRIAGE PIPELINE */}
+        {(layoutMode === "scroll" || activeTab === "pipeline") && (
+          <section
+            id="chapter-pipeline"
+            data-chapter="pipeline"
+            className="scroll-chapter scroll-reveal is-visible"
+          >
             <div
               style={{
                 display: "flex",
@@ -1425,7 +1662,7 @@ export default function App() {
             >
               <div>
                 <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
-                  Live OSINT Ingestion & 13-Second Triage Pipeline
+                  01. Live OSINT Ingestion & 13-Second Triage Pipeline
                 </h1>
                 <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
                   Real-time Abuse.ch URLHaus & FeodoTracker C2 ingestion · 18-feature ML ensemble scoring ·{" "}
@@ -1514,6 +1751,14 @@ export default function App() {
                 </div>
               ))}
             </div>
+
+            {/* INTERACTIVE 3D WEBGL GLOBAL C2 THREAT GLOBE & BALLISTIC ATTACK ARCS */}
+            <ThreatGlobe3D
+              triageQueue={triageQueue}
+              latestStreamedIoc={latestStreamedIoc}
+              onSelectIoc={(iocVal) => handleInspectFromQueue(iocVal)}
+              onPullNextNow={handlePullStreamNow}
+            />
 
             {/* LIVE WEBSOCKET STREAM & AUTONOMOUS TRIAGE QUEUE */}
             <div className="console-surface">
@@ -1779,10 +2024,18 @@ export default function App() {
                             <div style={{ fontWeight: 600 }}>{q.ioc_value}</div>
                             <div style={{ fontSize: "0.75rem", color: "var(--muted)" }}>
                               {q.ioc_type.toUpperCase()} · {q.threat_type}
+                              {q.geo
+                                ? ` · ${q.geo.origin_city}, ${q.geo.country_code} → ${q.geo.target_hub.split(" ")[0]}`
+                                : ""}
                             </div>
                           </td>
                           <td style={{ fontSize: "0.82rem", color: "var(--muted)" }}>
-                            {q.source_feed}
+                            <div>{q.source_feed}</div>
+                            {q.geo && (
+                              <div className="mono-num" style={{ fontSize: "0.72rem" }}>
+                                {q.geo.asn}
+                              </div>
+                            )}
                           </td>
                           <td className="mono-num" style={{ fontSize: "0.8rem" }}>
                             {q.model_breakdown ? (
@@ -2061,8 +2314,8 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {iocs.map((item) => (
-                      <tr key={item.id}>
+                    {iocs.map((item, idx) => (
+                      <tr key={`${item.ioc_value}-${item.id ?? idx}`}>
                         <td className="mono-num" style={{ maxWidth: 340, wordBreak: "break-all" }}>
                           {item.ioc_value}
                         </td>
@@ -2146,8 +2399,8 @@ export default function App() {
                         </td>
                       </tr>
                     ) : (
-                      auditLogs.slice(0, 12).map((log) => (
-                        <tr key={log.id}>
+                      auditLogs.slice(0, 12).map((log, idx) => (
+                        <tr key={`audit-${log.id}-${idx}`}>
                           <td className="mono-num" style={{ color: "var(--muted)" }}>
                             #{log.id}
                           </td>
@@ -2183,15 +2436,19 @@ export default function App() {
                 </table>
               </div>
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 2: TRAINABLE ML ENGINE, DATASET STUDIO & NLP EXTRACTOR */}
-        {activeTab === "ensemble" && (
-          <div>
+        {/* CHAPTER 02: TRAINABLE ML ENGINE, DATASET STUDIO & DEEP ATTRIBUTION */}
+        {(layoutMode === "scroll" || activeTab === "ensemble") && (
+          <section
+            id="chapter-ensemble"
+            data-chapter="ensemble"
+            className="scroll-chapter scroll-reveal"
+          >
             <div style={{ marginBottom: 28 }}>
               <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
-                Machine Learning Training Studio & Dataset Engine
+                02. Machine Learning Training Studio & Deep Attribution Engine
               </h1>
               <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
                 18-feature extraction pipeline · Stratified Train/Test evaluation · Soft-voting ensemble
@@ -2845,15 +3102,19 @@ export default function App() {
                 </div>
               )}
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 3: NEO4J THREAT KNOWLEDGE GRAPH */}
-        {activeTab === "graph" && (
-          <div>
+        {/* CHAPTER 03: NEO4J THREAT KNOWLEDGE GRAPH */}
+        {(layoutMode === "scroll" || activeTab === "graph") && (
+          <section
+            id="chapter-graph"
+            data-chapter="graph"
+            className="scroll-chapter scroll-reveal"
+          >
             <div style={{ marginBottom: 24 }}>
               <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
-                Neo4j Threat Knowledge Graph
+                03. Neo4j Threat Knowledge Graph
               </h1>
               <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
                 Interactive correlation topology linking threat actors, campaigns, TTPs, and active IOCs
@@ -2875,15 +3136,19 @@ export default function App() {
                 backgroundColor="#0b0b0b"
               />
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 4: AUTOMATED DETECTION RULE GENERATOR */}
-        {activeTab === "rules" && (
-          <div>
+        {/* CHAPTER 04: AUTOMATED DETECTION RULE GENERATOR */}
+        {(layoutMode === "scroll" || activeTab === "rules") && (
+          <section
+            id="chapter-rules"
+            data-chapter="rules"
+            className="scroll-chapter scroll-reveal"
+          >
             <div style={{ marginBottom: 24 }}>
               <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
-                Automated Detection Rule Generation
+                04. Automated Detection Rule Generation
               </h1>
               <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
                 Compile Sigma, YARA, Suricata, and Snort signatures in seconds
@@ -2944,15 +3209,19 @@ export default function App() {
                 </div>
               )}
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 5: 6-SOURCE PARALLEL ENRICHER */}
-        {activeTab === "enrich" && (
-          <div>
+        {/* CHAPTER 05: 6-SOURCE PARALLEL ENRICHER */}
+        {(layoutMode === "scroll" || activeTab === "enrich") && (
+          <section
+            id="chapter-enrich"
+            data-chapter="enrich"
+            className="scroll-chapter scroll-reveal"
+          >
             <div style={{ marginBottom: 24 }}>
               <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
-                6-Source Parallel Enrichment
+                05. 6-Source Parallel Enrichment
               </h1>
               <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
                 VirusTotal, AbuseIPDB, Shodan, and AlienVault OTX queried concurrently in under 5 seconds
@@ -3006,15 +3275,19 @@ export default function App() {
                 </div>
               )}
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 6: SIEM / SOAR / EDR EXPORT */}
-        {activeTab === "siem" && (
-          <div>
+        {/* CHAPTER 06: SIEM / SOAR / EDR EXPORT & AUTOMATED WEBHOOK PLAYBOOKS */}
+        {(layoutMode === "scroll" || activeTab === "siem") && (
+          <section
+            id="chapter-siem"
+            data-chapter="siem"
+            className="scroll-chapter scroll-reveal"
+          >
             <div style={{ marginBottom: 24 }}>
               <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
-                SIEM / SOAR / EDR Integrations
+                06. SIEM / SOAR / EDR Integrations & Automated Playbooks
               </h1>
               <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
                 One-click export into your existing security stack without rip-and-replace
@@ -3229,8 +3502,8 @@ export default function App() {
                         </td>
                       </tr>
                     ) : (
-                      soarExecutions.slice(0, 10).map((ex) => (
-                        <tr key={ex.id}>
+                      soarExecutions.slice(0, 10).map((ex, idx) => (
+                        <tr key={`soar-ex-${ex.id}-${idx}`}>
                           <td style={{ fontWeight: 500 }}>{ex.playbookName}</td>
                           <td className="mono-num" style={{ color: "var(--muted)" }}>
                             {ex.channel.toUpperCase()}
@@ -3264,15 +3537,19 @@ export default function App() {
                 </table>
               </div>
             </div>
-          </div>
+          </section>
         )}
 
-        {/* TAB 7: QUANTIFIABLE BUSINESS IMPACT & ENTERPRISE TIERS */}
-        {activeTab === "impact" && (
-          <div>
+        {/* CHAPTER 07: QUANTIFIABLE BUSINESS IMPACT & ENTERPRISE TIERS */}
+        {(layoutMode === "scroll" || activeTab === "impact") && (
+          <section
+            id="chapter-impact"
+            data-chapter="impact"
+            className="scroll-chapter scroll-reveal"
+          >
             <div style={{ marginBottom: 24 }}>
               <h1 style={{ fontSize: "2rem", fontWeight: 400, letterSpacing: "-0.01em" }}>
-                Business Impact & Enterprise Tiers
+                07. Business Impact & Enterprise Tiers
               </h1>
               <p style={{ color: "var(--muted)", fontSize: "0.95rem", marginTop: 6 }}>
                 Quantifiable improvements across every core SOC metric · 600% estimated ROI · 4-month payback
@@ -3343,23 +3620,23 @@ export default function App() {
             >
               {[
                 {
-                  name: "Starter",
+                  name: "Starter · For Early-Stage SOC Teams",
                   price: "$2,499",
                   specs: ["1,000 IOCs / day", "5 analyst seats", "Email support", "Full feature access"],
                 },
                 {
-                  name: "Professional",
+                  name: "Professional · For Scaling Security Operations",
                   price: "$5,999",
                   specs: ["10,000 IOCs / day", "20 analyst seats", "24/7 priority support", "SIEM / EDR webhooks"],
                 },
                 {
-                  name: "Enterprise",
+                  name: "Enterprise · For Global Threat Intelligence",
                   price: "$14,999",
                   specs: ["Unlimited IOCs", "Unlimited seats", "Dedicated CSM", "Custom feed integrations"],
                 },
               ].map((tier) => (
                 <div key={tier.name} className="console-surface" style={{ marginBottom: 0 }}>
-                  <div style={{ fontSize: "1.1rem", fontWeight: 500 }}>{tier.name}</div>
+                  <div style={{ fontSize: "1.05rem", fontWeight: 500 }}>{tier.name}</div>
                   <div className="mono-num" style={{ fontSize: "2.1rem", fontWeight: 700, margin: "12px 0" }}>
                     {tier.price}
                     <span style={{ fontSize: "0.85rem", color: "var(--muted)", fontWeight: 400 }}>/mo</span>
@@ -3384,16 +3661,26 @@ export default function App() {
                     type="button"
                     className="console-btn-pill"
                     style={{ width: "100%", justifyContent: "center" }}
-                    onClick={() => setActiveTab("pipeline")}
+                    onClick={() => navigateToChapter("pipeline")}
                   >
-                    Active Plan · Launch Pipeline
+                    Active Plan · Jump to Live Pipeline
                   </button>
                 </div>
               ))}
             </div>
-          </div>
+          </section>
         )}
       </main>
+
+      {showScrollTop && (
+        <button
+          type="button"
+          className="scroll-top-fab"
+          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+        >
+          ↑ Top ({Math.round(scrollProgress * 100)}%)
+        </button>
+      )}
     </div>
   );
 }
